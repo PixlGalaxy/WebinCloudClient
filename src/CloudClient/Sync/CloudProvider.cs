@@ -16,8 +16,9 @@ namespace CloudClient.Sync;
 /// <summary>
 /// Answers Windows' Cloud Files callbacks for the sync folder and keeps it in
 /// step with the server:
-/// - a folder's entries are listed from the server when it is opened, as
-///   placeholders that take no space;
+/// - every folder is listed from the server ahead of time (entries only, as
+///   placeholders that take no space), so File Explorer's navigation pane can
+///   expand the whole tree; a folder opened before that is listed at once;
 /// - a file's bytes are downloaded (with HTTP ranges) when something opens it;
 /// - when the server reports a folder changed, the folder is compared with
 ///   the server: edited files become fresh placeholders (downloaded again on
@@ -135,11 +136,14 @@ public sealed class CloudProvider : IDisposable
     {
         using var batch = new PlaceholderBatch(entries);
         var operation = Operation(connection, transfer, CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS);
-        // No "fully populated" flag: Windows asks again next time the folder is opened,
-        // which picks up entries added on the server since. Names already here are skipped.
+        // Marked fully listed: a folder left half-listed stays "offline", and File
+        // Explorer's navigation pane will not expand it. Later server changes reach
+        // it through ReconcileAsync.
         var parameters = CF_OPERATION_PARAMETERS.Create(new CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
         {
-            Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_NONE,
+            Flags = status == StatusSuccess
+                ? CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION
+                : CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_NONE,
             CompletionStatus = status,
             PlaceholderTotalCount = entries.Count,
             PlaceholderArray = batch.Array,
@@ -152,15 +156,52 @@ public sealed class CloudProvider : IDisposable
     // --- following the server -----------------------------------------------------------
 
     /// <summary>
-    /// Brings one local folder in line with the server. Only folders already
-    /// listed on this computer: the rest are listed fresh when first opened.
-    /// Windows does not ask for a listed folder again, so this is how entries
-    /// added on the server later reach it.
+    /// The server changed a folder: brings it in line, then lists any of its
+    /// subfolders not listed yet (a folder just added there, say).
     /// </summary>
-    public async Task ReconcileAsync(string relative)
+    public Task ReconcileAsync(string relative) => WalkAsync(relative, everything: false);
+
+    /// <summary>
+    /// After (re)connecting: every folder, top down, to catch up on what
+    /// changed while the app was away and to list folders not listed yet.
+    /// </summary>
+    public Task ReconcileAllAsync() => WalkAsync("", everything: true);
+
+    private async Task WalkAsync(string start, bool everything)
+    {
+        var queue = new Queue<string>([start]);
+        while (queue.Count > 0)
+        {
+            var relative = queue.Dequeue();
+            await ReconcileFolderAsync(relative);
+            var local = LocalPath(relative);
+            if (!Directory.Exists(local)) continue;
+            try
+            {
+                foreach (var child in new DirectoryInfo(local).GetDirectories())
+                {
+                    if (IsIgnored(child.Name) || !IsSynced(child.FullName)) continue;
+                    if (everything || !IsListed(child.FullName)) queue.Enqueue(Join(relative, child.Name));
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Removed or renamed meanwhile; the next notice for its parent sorts it out.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Brings one local folder in line with the server, and marks it fully
+    /// listed. Windows does not ask for a listed folder again, so this is how
+    /// entries added on the server later reach it.
+    /// </summary>
+    private async Task ReconcileFolderAsync(string relative)
     {
         var local = LocalPath(relative);
-        if (!IsListed(local, relative)) return;
+        if (!Directory.Exists(local) || IsBeingRemoved(relative)) return;
+        // A folder listed for the first time only fills in; that is not news for the activity list.
+        var wasListed = IsListed(local);
 
         await _reconcileGate.WaitAsync();
         try
@@ -195,7 +236,8 @@ public sealed class CloudProvider : IDisposable
                 if (item is FileInfo && (item.Attributes & (Unpinned | Pinned)) != 0) ApplyPinState(item.FullName, isDirectory: false);
                 if (!remoteByName.TryGetValue(item.Name, out var entry))
                 {
-                    Remove(item, $"{Join(relative, item.Name)} is gone from the server");
+                    if (Remove(item, $"{Join(relative, item.Name)} is gone from the server"))
+                        Activity.Record(ActivityKind.RemovedOnServer, Join(relative, item.Name));
                     continue;
                 }
 
@@ -210,6 +252,7 @@ public sealed class CloudProvider : IDisposable
                     var wasPinned = item.Attributes.HasFlag(Pinned);
                     if (Remove(item, $"{entry.Path} changed on the server"))
                     {
+                        Activity.Record(ActivityKind.ChangedOnServer, entry.Path, entry.Size);
                         toCreate.Add(entry);
                         if (wasPinned) pinnedAgain.Add(item.FullName);
                     }
@@ -217,8 +260,14 @@ public sealed class CloudProvider : IDisposable
                 remoteByName.Remove(item.Name);
             }
             toCreate.AddRange(remoteByName.Values);
+            if (wasListed)
+            {
+                foreach (var entry in remoteByName.Values)
+                    Activity.Record(ActivityKind.NewFromServer, entry.Path, entry.Type == "folder" ? null : entry.Size);
+            }
 
             if (toCreate.Count > 0) CreatePlaceholders(local, toCreate);
+            if (!wasListed) MarkListed(local, relative);
             // Kept on this device: pin the fresh placeholder again and download it now,
             // since Windows only downloads pinned files when the pin is set by the user.
             foreach (var path in pinnedAgain)
@@ -244,32 +293,32 @@ public sealed class CloudProvider : IDisposable
         }
     }
 
-    /// <summary>
-    /// After (re)connecting: every folder listed on this computer, top down,
-    /// to catch up on what changed while the app was away.
-    /// </summary>
-    public async Task ReconcileAllAsync()
+    /// <summary>Whether the folder's entries are all here (Windows clears "offline" once it is fully listed).</summary>
+    private static bool IsListed(string local) =>
+        Directory.Exists(local) && !File.GetAttributes(local).HasFlag(NotListed);
+
+    /// <summary>Tells Windows the folder holds all its entries, so it stops treating it as offline.</summary>
+    private static void MarkListed(string local, string relative)
     {
-        var queue = new Queue<string>([""]);
-        while (queue.Count > 0)
+        try
         {
-            var relative = queue.Dequeue();
-            await ReconcileAsync(relative);
-            var local = LocalPath(relative);
-            if (!Directory.Exists(local)) continue;
-            foreach (var child in new DirectoryInfo(local).GetDirectories())
+            CfOpenFileWithOplock(local, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS, out var protectedHandle).ThrowIfFailed();
+            using (protectedHandle)
             {
-                var childRelative = Join(relative, child.Name);
-                if (IsListed(child.FullName, childRelative)) queue.Enqueue(childRelative);
+                CF_FS_METADATA? metadata = null;
+                long? usn = null;
+                System.Threading.NativeOverlapped? overlapped = null;
+                CfUpdatePlaceholder(CfGetWin32HandleFromProtectedHandle(protectedHandle), in metadata,
+                        relative == "" ? null : Encoding.UTF8.GetBytes(relative), null,
+                        CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DISABLE_ON_DEMAND_POPULATION, ref usn, ref overlapped)
+                    .ThrowIfFailed();
             }
         }
-    }
-
-    /// <summary>The root always counts; any other folder once Windows has listed it.</summary>
-    private static bool IsListed(string local, string relative)
-    {
-        if (!Directory.Exists(local)) return false;
-        return relative == "" || !File.GetAttributes(local).HasFlag(NotListed);
+        catch (Exception ex)
+        {
+            // Opening it in File Explorer lists it instead.
+            Log.Warn($"Could not mark \"{relative}\" as listed: {ex.Message}");
+        }
     }
 
     /// <summary>Reading a placeholder through makes Windows fetch all of it (through FETCH_DATA).</summary>
@@ -321,7 +370,7 @@ public sealed class CloudProvider : IDisposable
     }
 
     /// <summary>Back to a cloud-only placeholder, then the request mark is cleared so opening it later just downloads it.</summary>
-    private static void FreeUp(string path)
+    private void FreeUp(string path)
     {
         var attributes = File.GetAttributes(path);
         if (!attributes.HasFlag(CloudOnly))
@@ -333,6 +382,7 @@ public sealed class CloudProvider : IDisposable
                     .ThrowIfFailed();
             }
             Log.Info($"Freed up space: \"{path}\"");
+            Activity.Record(ActivityKind.FreedUp, RelativeOf(path));
         }
         File.SetAttributes(path, File.GetAttributes(path) & ~Unpinned);
     }
@@ -420,6 +470,7 @@ public sealed class CloudProvider : IDisposable
             var status = await RemoteAsync(() => _api.SendAsync(
                 () => new HttpRequestMessage(HttpMethod.Delete, ServerAddress.Api(_api.ServerUrl, $"files?path={Uri.EscapeDataString(relative)}")),
                 CancellationToken.None), $"delete \"{relative}\"");
+            if (status == StatusSuccess) Activity.Record(ActivityKind.Deleted, relative);
             Ack(connection, transfer, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE, status);
         });
     }
@@ -453,10 +504,12 @@ public sealed class CloudProvider : IDisposable
                 status = await RemoteAsync(() => _api.SendAsync(
                     () => new HttpRequestMessage(HttpMethod.Delete, ServerAddress.Api(_api.ServerUrl, $"files?path={Uri.EscapeDataString(source)}")),
                     CancellationToken.None), $"remove \"{source}\" (moved out of the folder)");
+                if (status == StatusSuccess) Activity.Record(ActivityKind.Deleted, source, detail: "Moved out of the folder");
             }
             else
             {
                 status = await RemoteAsync(() => RenameOrMoveAsync(source, target), $"move \"{source}\" to \"{target}\"");
+                if (status == StatusSuccess) Activity.Record(ActivityKind.Moved, target, detail: $"From {source}");
             }
             Ack(connection, transfer, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME, status);
         });
@@ -548,12 +601,14 @@ public sealed class CloudProvider : IDisposable
                 // A folder moved in from elsewhere arrives in one event: its contents follow.
                 foreach (var child in Directory.EnumerateFileSystemEntries(fullPath)) _local?.Touch(child);
                 Log.Info($"Synced: created folder \"{relative}\"");
+                Activity.Record(ActivityKind.CreatedFolder, relative);
             }
             else
             {
-                await UploadAsync(fullPath, relative);
+                var size = await UploadAsync(fullPath, relative);
                 MarkSynced(fullPath, relative);
                 Log.Info($"Synced: uploaded \"{relative}\"");
+                Activity.Record(ActivityKind.Uploaded, relative, size);
             }
             return true;
         }
@@ -592,12 +647,13 @@ public sealed class CloudProvider : IDisposable
         }
     }
 
-    /// <summary>Uploads the file over whatever is on the server (the last change wins), keeping its modification time.</summary>
-    private async Task UploadAsync(string fullPath, string relative)
+    /// <summary>Uploads the file over whatever is on the server (the last change wins), keeping its modification time. Returns its size.</summary>
+    private async Task<long> UploadAsync(string fullPath, string relative)
     {
         var modified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
         var url = $"files/upload?path={Uri.EscapeDataString(ParentOf(relative))}&onConflict=overwrite&modifiedAt={Uri.EscapeDataString(modified)}";
         var opened = new List<FileStream>();
+        var transfer = Activity.Begin(relative, Direction.Up, new FileInfo(fullPath).Length);
         try
         {
             using var _ = await _api.SendAsync(() =>
@@ -605,14 +661,16 @@ public sealed class CloudProvider : IDisposable
                 // A fresh stream per attempt: a retried request cannot reuse a read one.
                 var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1 << 16, useAsync: true);
                 opened.Add(stream);
-                var file = new StreamContent(stream);
+                var file = new StreamContent(new ProgressStream(stream, bytes => Activity.Progress(transfer, bytes)));
                 file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 var form = new MultipartFormDataContent { { file, "file", NameOf(relative) } };
                 return new HttpRequestMessage(HttpMethod.Post, ServerAddress.Api(_api.ServerUrl, url)) { Content = form };
             }, CancellationToken.None, stream: true);
+            return transfer.Total;
         }
         finally
         {
+            Activity.End(transfer);
             foreach (var stream in opened) await stream.DisposeAsync();
         }
     }
@@ -697,6 +755,7 @@ public sealed class CloudProvider : IDisposable
     {
         var position = offset;
         var end = Math.Min(offset + length, fileSize);
+        var progress = Activity.Begin(relative, Direction.Down, end - offset);
         try
         {
             using var response = await _api.SendAsync(() =>
@@ -720,7 +779,10 @@ public sealed class CloudProvider : IDisposable
                 }
                 TransferData(connection, transfer, buffer, position, filled, StatusSuccess);
                 position += filled;
+                Activity.Progress(progress, filled);
             }
+            // Windows may fetch a file in pieces; the piece that reaches the end completes it.
+            if (end == fileSize) Activity.Record(ActivityKind.Downloaded, relative, fileSize);
         }
         catch (Exception ex)
         {
@@ -730,6 +792,7 @@ public sealed class CloudProvider : IDisposable
         }
         finally
         {
+            Activity.End(progress);
             if (_transfers.TryRemove(transfer, out var source)) source.Dispose();
         }
     }

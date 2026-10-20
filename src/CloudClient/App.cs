@@ -5,6 +5,7 @@ using CloudClient.Auth;
 using CloudClient.Core;
 using CloudClient.Sync;
 using CloudClient.UI;
+using CloudClient.Updates;
 using CloudClient.Views;
 
 namespace CloudClient;
@@ -16,12 +17,20 @@ namespace CloudClient;
 /// </summary>
 public sealed class App : Application
 {
+    /// <summary>Signalled by the installer and uninstaller to make a running copy quit.</summary>
+    public static readonly string QuitEventName = $@"Local\{Brand.Id}.Quit";
+    /// <summary>The first check waits a little, so starting with Windows stays light.</summary>
+    private static readonly TimeSpan FirstUpdateCheck = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan UpdateCheckEvery = TimeSpan.FromHours(6);
+
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly bool _background;
     private TrayIcon? _tray;
     private ApiClient? _api;
     private ServerEvents? _events;
     private SyncEngine? _sync;
+    private Updater? _updater;
+    private DispatcherTimer? _updateTimer;
     private MainWindow? _main;
     private SetupWindow? _setup;
 
@@ -39,6 +48,24 @@ public sealed class App : Application
     [STAThread]
     public static void Main(string[] args)
     {
+        if (args.Contains(Installer.UninstallArgument))
+        {
+            Installer.Uninstall();
+            return;
+        }
+        if (Installer.ShouldInstall(args))
+        {
+            Installer.Install();
+            return;
+        }
+        Updater.FinishPrevious(args);
+        // The app is in English throughout, dates and numbers included, whatever the Windows language.
+        var english = System.Globalization.CultureInfo.GetCultureInfo("en-US");
+        System.Globalization.CultureInfo.DefaultThreadCurrentCulture = english;
+        System.Globalization.CultureInfo.DefaultThreadCurrentUICulture = english;
+        Thread.CurrentThread.CurrentCulture = english;
+        Thread.CurrentThread.CurrentUICulture = english;
+
         using var single = new Mutex(true, $@"Local\{Brand.Id}.App", out var first);
         using var showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, $@"Local\{Brand.Id}.Show");
         if (!first)
@@ -55,15 +82,20 @@ public sealed class App : Application
 
         // A second launch signals this event; bring the window forward.
         ThreadPool.RegisterWaitForSingleObject(showSignal, (_, _) => app.Dispatcher.BeginInvoke(app.ShowWindow), null, -1, false);
+        using var quitSignal = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEventName);
+        ThreadPool.RegisterWaitForSingleObject(quitSignal, (_, _) => app.Dispatcher.BeginInvoke(app.Quit), null, -1, true);
         app.Startup += (_, _) => app.Begin();
         app.Run();
     }
 
     private void Begin()
     {
-        Log.Info($"{Brand.Name} starting");
+        Log.Info($"{Brand.Name} {Updater.Current} starting from {Environment.ProcessPath}");
         _tray = new TrayIcon(ShowWindow, TrayItems);
         ThumbnailServer.Start();
+        Installer.Refresh();
+        // Points the start-with-Windows entry at this exe, wherever it now lives.
+        if (_settings.IsSignedIn) AutoStart.Apply(_settings.StartWithWindows);
 
         var tokens = _settings.IsSignedIn ? SafeLoadTokens(_settings.ServerUrl!) : null;
         if (tokens is null) ShowSetup();
@@ -88,7 +120,16 @@ public sealed class App : Application
         _api = new ApiClient(_settings.ServerUrl!, tokens);
         _api.SignedOut += () => Dispatcher.BeginInvoke(() => EndSession(serverSide: false));
         _sync = new SyncEngine(_settings, _api);
-        _main = new MainWindow(_settings, _api, _sync, () => EndSession(serverSide: true));
+        _updater = new Updater(_api);
+        _updater.Changed += () => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(_updater?.Available?.Version));
+        _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };
+        _updateTimer.Tick += (_, _) =>
+        {
+            _updateTimer!.Interval = UpdateCheckEvery;
+            _ = _updater?.CheckAsync();
+        };
+        _updateTimer.Start();
+        _main = new MainWindow(_settings, _api, _sync, _updater, InstallUpdate, () => EndSession(serverSide: true));
         _tray?.SetStatus("Connecting…");
         _events = new ServerEvents(_api);
         _events.ConnectionChanged += connected => Dispatcher.BeginInvoke(() => _tray?.SetStatus(connected ? "Connected" : "Offline, retrying"));
@@ -120,6 +161,10 @@ public sealed class App : Application
     {
         var api = _api;
         _api = null;
+        _updateTimer?.Stop();
+        _updateTimer = null;
+        _updater = null;
+        _tray?.SetUpdate(null);
         _events?.Dispose();
         _events = null;
         _sync?.Remove();
@@ -159,9 +204,17 @@ public sealed class App : Application
     private IReadOnlyList<TrayItem> TrayItems()
     {
         var items = new List<TrayItem> { new($"Open {Brand.Name}", "cloud", ShowWindow) };
+        if (_updater?.Available is { } update && Updater.Supported) items.Add(new($"Update to version {update.Version}", "download", InstallUpdate));
         if (_api is not null) items.Add(new("Open website", "external-link", () => Views.MainWindow.OpenWebsite(_api.ServerUrl)));
         items.Add(new("Quit", "power", Quit));
         return items;
+    }
+
+    /// <summary>Downloads and installs the update; the new version starts as this one quits.</summary>
+    private async void InstallUpdate()
+    {
+        if (_updater is null) return;
+        if (await _updater.InstallAsync()) Quit();
     }
 
     private void Quit()

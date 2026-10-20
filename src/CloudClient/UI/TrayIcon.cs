@@ -37,6 +37,16 @@ public sealed class TrayIcon : IDisposable
 
     public void SetStatus(string status) => _icon.Text = Truncate($"{Brand.Name} - {status}", 63);
 
+    private Version? _announced;
+
+    /// <summary>Mentions a new version once, with a notification; the menu then offers to install it.</summary>
+    public void SetUpdate(Version? version)
+    {
+        if (version is null || version == _announced) return;
+        _announced = version;
+        _icon.ShowBalloonTip(8000, $"{Brand.Name} {version} is available", "Open the app or right-click this icon to update.", Forms.ToolTipIcon.Info);
+    }
+
     private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];
 
     private void ShowMenu()

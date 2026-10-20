@@ -1,31 +1,78 @@
 <#
 .SYNOPSIS
-  Publishes the Windows app as a single self-contained exe for one brand.
+  Publishes the Windows app as single self-contained exes, one per brand,
+  into a folder named after the version.
+
+.DESCRIPTION
+  Writes dist/<version>/ with, for each brand:
+    <Brand>.exe            the app (installs itself when run)
+    <Brand>Version.txt     the version, e.g. 1.0.0
+    <Brand>Sha.txt         the exe's SHA-256
+    <Brand>Signature.txt   the signature over brand, version and SHA-256
+  for example WebinCloud.exe, WebinCloudSha.txt, RyzhellCloud.exe, RyzhellCloudSha.txt.
+  To publish an update, copy the four files of a brand into the server's
+  clients folder (/appdata/clients in Docker). The server offers the version,
+  SHA-256 and signature as plain text; the app installs the exe only when the
+  signature was made with the key from new-signing-key.ps1 and the exe it
+  downloaded matches the SHA-256.
 
 .EXAMPLE
-  ./scripts/build.ps1                      # Webin Cloud
-  ./scripts/build.ps1 -Brand RyzhellCloud  # Ryzhell Cloud
+  ./scripts/build.ps1                          # both brands, version from CloudClient.csproj
+  ./scripts/build.ps1 -Version 0.2.0           # both brands as 0.2.0
+  ./scripts/build.ps1 -Brand RyzhellCloud      # one brand only
 #>
 param(
-    [ValidateSet('WebinCloud', 'RyzhellCloud')]
-    [string]$Brand = 'WebinCloud',
+    [ValidateSet('All', 'WebinCloud', 'RyzhellCloud')]
+    [string]$Brand = 'All',
     [ValidateSet('win-x64', 'win-arm64')]
-    [string]$Runtime = 'win-x64'
+    [string]$Runtime = 'win-x64',
+    # Defaults to <Version> in CloudClient.csproj.
+    [string]$Version = '',
+    [string]$SigningKey = (Join-Path $env:USERPROFILE '.webincloud\client-signing-key.blob')
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$out = Join-Path $root "dist\$Brand\$Runtime"
+$project = Join-Path $root 'src\CloudClient\CloudClient.csproj'
 
-dotnet publish (Join-Path $root 'src\CloudClient\CloudClient.csproj') `
-    -c Release `
-    -r $Runtime `
-    -p:Brand=$Brand `
-    --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
-    -p:EnableCompressionInSingleFile=true `
-    -o $out
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+if (-not $Version) { $Version = ([xml](Get-Content $project)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1 }
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3, got '$Version'" }
 
-Write-Host "Built $(Join-Path $out "$Brand.exe")"
+# x64 builds go straight in dist/<version>; other runtimes in a subfolder.
+$out = Join-Path $root "dist\$Version"
+if ($Runtime -ne 'win-x64') { $out = Join-Path $out $Runtime }
+New-Item -ItemType Directory -Force $out | Out-Null
+
+$sign = Test-Path $SigningKey
+if (-not $sign) { Write-Warning "No signing key at ${SigningKey}: no Signature.txt files written, so apps will not accept these builds as updates. Run ./scripts/new-signing-key.ps1 once." }
+
+$brands = if ($Brand -eq 'All') { @('WebinCloud', 'RyzhellCloud') } else { @($Brand) }
+foreach ($b in $brands) {
+    $staging = Join-Path $root "artifacts\$b\publish\$Runtime"
+    dotnet publish $project -c Release -r $Runtime "-p:Brand=$b" "-p:Version=$Version" `
+        --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:EnableCompressionInSingleFile=true -o $staging
+    if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $b" }
+
+    $exe = Join-Path $out "$b.exe"
+    Copy-Item (Join-Path $staging "$b.exe") $exe -Force
+    $sha256 = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText((Join-Path $out "${b}Sha.txt"), "$sha256`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $out "${b}Version.txt"), "$Version`n", $utf8)
+
+    if ($sign) {
+        # Signed: brand, version and SHA-256, one per line. The app checks this
+        # signature against the public key built into it before installing anything.
+        $key = [System.Security.Cryptography.CngKey]::Import([System.IO.File]::ReadAllBytes($SigningKey), [System.Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob)
+        $ecdsa = New-Object System.Security.Cryptography.ECDsaCng($key)
+        $ecdsa.HashAlgorithm = [System.Security.Cryptography.CngAlgorithm]::Sha256
+        $message = [System.Text.Encoding]::UTF8.GetBytes("$b`n$Version`n$sha256")
+        $signature = [Convert]::ToBase64String($ecdsa.SignData($message))
+        [System.IO.File]::WriteAllText((Join-Path $out "${b}Signature.txt"), "$signature`n", $utf8)
+    }
+    Write-Host "$b $Version  sha256 $sha256"
+}
+
+Write-Host "Done: $out"
+Write-Host "To offer an update, copy a brand's .exe, Version.txt, Sha.txt and Signature.txt to the server's clients folder."

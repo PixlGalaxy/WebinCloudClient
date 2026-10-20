@@ -58,6 +58,19 @@ public static class ThumbnailServer
         }
     }
 
+    /// <summary>Uninstalling: removes the COM class registered by Start.</summary>
+    public static void Unregister()
+    {
+        try
+        {
+            Registry.CurrentUser.DeleteSubKeyTree($@"Software\Classes\CLSID\{{{Brand.ThumbnailProviderClsid}}}", throwOnMissingSubKey: false);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not remove the thumbnail provider: {ex.Message}");
+        }
+    }
+
     public static void Stop()
     {
         if (_cookie != 0) CoRevokeClassObject(_cookie);
