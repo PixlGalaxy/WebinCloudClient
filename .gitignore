@@ -1,0 +1,13 @@
+# Local only
+/.claude/
+/assets/
+
+# Build output
+bin/
+obj/
+dist/
+artifacts/
+*.user
+.vs/
+.vscode/
+*.suo

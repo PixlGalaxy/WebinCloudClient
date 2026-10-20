@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <!-- 17763 = Windows 10 1809, the oldest release with the Cloud Files API features we use. -->
+    <TargetFramework>net9.0-windows10.0.17763.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <UseWPF>true</UseWPF>
+    <!-- Only for the tray icon (NotifyIcon); its namespace stays out of the global usings. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <!-- WPF reads DPI awareness from app.manifest; the WinForms analyzer only applies to WinForms apps. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
+    <RootNamespace>CloudClient</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+
+    <AssemblyName>$(Brand)</AssemblyName>
+    <ApplicationIcon>..\..\branding\$(Brand)\app.ico</ApplicationIcon>
+    <DefineConstants>$(DefineConstants);BRAND_$(Brand.ToUpperInvariant())</DefineConstants>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Brand)' == 'WebinCloud'">
+    <Product>Webin Cloud</Product>
+    <Company>Webin Cloud</Company>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Brand)' == 'RyzhellCloud'">
+    <Product>Ryzhell Cloud</Product>
+    <Company>Ryzhell Cloud</Company>
+  </PropertyGroup>
+
+  <Target Name="CheckBrand" BeforeTargets="BeforeBuild">
+    <Error Condition="'$(Brand)' != 'WebinCloud' And '$(Brand)' != 'RyzhellCloud'" Text="Unknown Brand '$(Brand)'. Use WebinCloud or RyzhellCloud." />
+  </Target>
+
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\Fonts\*.ttf" />
+    <EmbeddedResource Include="Assets\Lucide\*.svg" LogicalName="Lucide.%(Filename)" />
+    <Resource Include="..\..\branding\$(Brand)\icon.png" Link="Brand\icon.png" />
+    <Resource Include="..\..\branding\$(Brand)\logo.png" Link="Brand\logo.png" />
+    <Resource Include="..\..\branding\$(Brand)\app.ico" Link="Brand\app.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Vanara.PInvoke.CldApi" Version="5.0.7" />
+  </ItemGroup>
+
+</Project>

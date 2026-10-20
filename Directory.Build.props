@@ -1,0 +1,14 @@
+<Project>
+  <!--
+    Which product this build is: WebinCloud (default) or RyzhellCloud.
+    Pick it with -p:Brand=RyzhellCloud, or scripts/build.ps1 -Brand RyzhellCloud.
+    The brand sets the exe name, icon, logo, colours and every per-app identifier
+    (settings folder, credentials, sync root), so both can be installed side by side.
+  -->
+  <PropertyGroup>
+    <Brand Condition="'$(Brand)' == ''">WebinCloud</Brand>
+    <!-- Each brand builds into artifacts/<Brand>, outside the project, so their files never mix. -->
+    <BaseOutputPath>$(MSBuildThisFileDirectory)artifacts\$(Brand)\bin\</BaseOutputPath>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\$(Brand)\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+</Project>
