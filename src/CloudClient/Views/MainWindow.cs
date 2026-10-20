@@ -268,21 +268,21 @@ public sealed class MainWindow : AppWindow
     {
         if (_updateBox is null) return;
         var onHome = _page.Tag as string == "home";
-        var update = _updater.Available;
+        var update = _updater.Ready;
         if (onHome && update is null && _updater.Status is null)
         {
             _updateBox.Content = null;
             return;
         }
 
-        var install = Ui.Button($"Update to {update?.Version}", "download", "PrimaryButton", (_, _) => _installUpdate());
-        install.IsEnabled = Updater.Supported && !_updater.IsBusy;
+        var install = Ui.Button("Restart and update", "download", "PrimaryButton", (_, _) => _installUpdate());
+        install.IsEnabled = !_updater.IsBusy;
         install.Visibility = update is null ? Visibility.Collapsed : Visibility.Visible;
         var check = Ui.Button("Check for updates", "refresh-cw", "SecondaryButton", (_, _) => _ = _updater.CheckAsync());
         check.IsEnabled = !_updater.IsBusy;
 
         var summary = update is not null
-            ? $"Version {update.Version} is available. You have {Updater.Current}."
+            ? $"Version {update.Version} is downloaded and ready. It installs by itself the next time the app starts, or restart now."
             : _updater.LastChecked is { } at ? $"You have the latest version, {Updater.Current}. Checked at {When(at)}." : $"You have version {Updater.Current}.";
         var lines = Ui.Stack(Ui.Text(summary, "Body"));
         if (_updater.Status is { } status) lines.Children.Add(Gap(Ui.Sentence(status, status.StartsWith("Could") || status.Contains("not") ? "Warning" : "TextMuted"), 6));

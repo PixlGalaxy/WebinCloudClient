@@ -28,6 +28,10 @@ public sealed class TrayIcon : IDisposable
             Text = Brand.Name,
             Visible = true,
         };
+        _icon.BalloonTipClicked += (_, _) =>
+        {
+            if (_announced is not null) UpdateClicked?.Invoke();
+        };
         _icon.MouseUp += (_, e) =>
         {
             if (e.Button == Forms.MouseButtons.Left) open();
@@ -39,12 +43,16 @@ public sealed class TrayIcon : IDisposable
 
     private Version? _announced;
 
-    /// <summary>Mentions a new version once, with a notification; the menu then offers to install it.</summary>
+    /// <summary>Clicking the update notification: restart into the new version.</summary>
+    public event Action? UpdateClicked;
+
+    /// <summary>Mentions a downloaded version once, with a notification; the menu then offers to install it.</summary>
     public void SetUpdate(Version? version)
     {
         if (version is null || version == _announced) return;
         _announced = version;
-        _icon.ShowBalloonTip(8000, $"{Brand.Name} {version} is available", "Open the app or right-click this icon to update.", Forms.ToolTipIcon.Info);
+        _icon.ShowBalloonTip(10000, $"{Brand.Name} {version} is ready",
+            "Click to restart and update now. Otherwise it updates the next time the app starts.", Forms.ToolTipIcon.Info);
     }
 
     private static string Truncate(string text, int max) => text.Length <= max ? text : text[..max];

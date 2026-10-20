@@ -19,9 +19,11 @@ public sealed class App : Application
 {
     /// <summary>Signalled by the installer and uninstaller to make a running copy quit.</summary>
     public static readonly string QuitEventName = $@"Local\{Brand.Id}.Quit";
-    /// <summary>The first check waits a little, so starting with Windows stays light.</summary>
-    private static readonly TimeSpan FirstUpdateCheck = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan UpdateCheckEvery = TimeSpan.FromHours(6);
+    /// <summary>The first check waits for the network, which a laptop may still be joining at sign-in.</summary>
+    private static readonly TimeSpan FirstUpdateCheck = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan UpdateCheckEvery = TimeSpan.FromMinutes(15);
+    /// <summary>The arguments this run started with, passed on when restarting into an update.</summary>
+    private static string[] _args = [];
 
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly bool _background;
@@ -29,7 +31,8 @@ public sealed class App : Application
     private ApiClient? _api;
     private ServerEvents? _events;
     private SyncEngine? _sync;
-    private Updater? _updater;
+    /// <summary>Updates come from the publisher, not the user's server: checked signed in or not.</summary>
+    private readonly Updater _updater = new();
     private DispatcherTimer? _updateTimer;
     private MainWindow? _main;
     private SetupWindow? _setup;
@@ -75,8 +78,12 @@ public sealed class App : Application
         }
 
         // Started by Windows to serve File Explorer's thumbnails: stay in the tray.
-        var background = args.Contains(AutoStart.BackgroundArgument) ||
-                         args.Any(a => a.Equals(ThumbnailServer.Embedding, StringComparison.OrdinalIgnoreCase) || a.Equals("/Embedding", StringComparison.OrdinalIgnoreCase));
+        var embedding = args.Any(a => a.Equals(ThumbnailServer.Embedding, StringComparison.OrdinalIgnoreCase) || a.Equals("/Embedding", StringComparison.OrdinalIgnoreCase));
+        var background = args.Contains(AutoStart.BackgroundArgument) || embedding;
+        _args = args;
+        // An update downloaded in an earlier run installs now, before anything starts. Not when
+        // Windows started the app for a thumbnail: it expects this process to answer.
+        if (!embedding && Updater.ApplyStaged(args)) return;
         var app = new App(background);
         Theme.Apply(app);
 
@@ -94,6 +101,15 @@ public sealed class App : Application
         _tray = new TrayIcon(ShowWindow, TrayItems);
         ThumbnailServer.Start();
         Installer.Refresh();
+        _updater.ReadyToInstall += version => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(version));
+        _tray.UpdateClicked += InstallUpdate;
+        _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };
+        _updateTimer.Tick += (_, _) =>
+        {
+            _updateTimer!.Interval = UpdateCheckEvery;
+            _ = _updater.CheckAsync();
+        };
+        _updateTimer.Start();
         // Points the start-with-Windows entry at this exe, wherever it now lives.
         if (_settings.IsSignedIn) AutoStart.Apply(_settings.StartWithWindows);
 
@@ -120,15 +136,6 @@ public sealed class App : Application
         _api = new ApiClient(_settings.ServerUrl!, tokens);
         _api.SignedOut += () => Dispatcher.BeginInvoke(() => EndSession(serverSide: false));
         _sync = new SyncEngine(_settings, _api);
-        _updater = new Updater();
-        _updater.Changed += () => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(_updater?.Available?.Version));
-        _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };
-        _updateTimer.Tick += (_, _) =>
-        {
-            _updateTimer!.Interval = UpdateCheckEvery;
-            _ = _updater?.CheckAsync();
-        };
-        _updateTimer.Start();
         _main = new MainWindow(_settings, _api, _sync, _updater, InstallUpdate, () => EndSession(serverSide: true));
         _tray?.SetStatus("Connecting…");
         _events = new ServerEvents(_api);
@@ -161,10 +168,6 @@ public sealed class App : Application
     {
         var api = _api;
         _api = null;
-        _updateTimer?.Stop();
-        _updateTimer = null;
-        _updater = null;
-        _tray?.SetUpdate(null);
         _events?.Dispose();
         _events = null;
         _sync?.Remove();
@@ -204,17 +207,16 @@ public sealed class App : Application
     private IReadOnlyList<TrayItem> TrayItems()
     {
         var items = new List<TrayItem> { new($"Open {Brand.Name}", "cloud", ShowWindow) };
-        if (_updater?.Available is { } update && Updater.Supported) items.Add(new($"Update to version {update.Version}", "download", InstallUpdate));
+        if (_updater.Ready is { } update) items.Add(new($"Restart and update to {update.Version}", "download", InstallUpdate));
         if (_api is not null) items.Add(new("Open website", "external-link", () => Views.MainWindow.OpenWebsite(_api.ServerUrl)));
         items.Add(new("Quit", "power", Quit));
         return items;
     }
 
-    /// <summary>Downloads and installs the update; the new version starts as this one quits.</summary>
-    private async void InstallUpdate()
+    /// <summary>Installs the downloaded update; the new version starts as this one quits.</summary>
+    private void InstallUpdate()
     {
-        if (_updater is null) return;
-        if (await _updater.InstallAsync()) Quit();
+        if (_updater.InstallNow(_args)) Quit();
     }
 
     private void Quit()
