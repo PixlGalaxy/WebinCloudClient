@@ -1,28 +1,25 @@
 namespace CloudClient.Updates;
 
 /// <summary>
-/// Where updates come from. {brand} becomes WebinCloud or RyzhellCloud.
-/// A relative path is on the signed-in server's API (/backend/api/...) and is
-/// requested with this device's sign-in; a full https:// URL is used as is,
-/// without it, so the files can live on any other host. Whatever the host,
-/// the publisher's signature is checked before anything is installed.
+/// Where every copy of the app looks for updates: the publisher's own
+/// server, whatever server the user is signed in to. Only the publisher
+/// puts files there, and the app still checks the signature before
+/// installing anything. The files are the ones scripts/build.ps1 writes,
+/// uploaded as they are.
 /// </summary>
 public static class UpdateSource
 {
+    public const string BaseUrl = "https://webincloud.itsgalaxy.com/updates/";
+
     /// <summary>Plain text: the latest version, e.g. 1.0.0.</summary>
-    public const string VersionUrl = "client/{brand}/version";
+    public static string VersionUrl => $"{BaseUrl}{Brand.Id}Version.txt";
 
     /// <summary>Plain text: the SHA-256 of the latest exe.</summary>
-    public const string Sha256Url = "client/{brand}/sha256";
+    public static string Sha256Url => $"{BaseUrl}{Brand.Id}Sha.txt";
 
     /// <summary>Plain text: the publisher's signature over brand, version and SHA-256.</summary>
-    public const string SignatureUrl = "client/{brand}/signature";
+    public static string SignatureUrl => $"{BaseUrl}{Brand.Id}Signature.txt";
 
     /// <summary>The latest exe.</summary>
-    public const string ExeUrl = "client/{brand}/download";
-
-    public static string For(string template) => template.Replace("{brand}", Brand.Id);
-
-    public static bool IsExternal(string url) =>
-        url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) || url.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
+    public static string ExeUrl => $"{BaseUrl}{Brand.Id}.exe";
 }

@@ -120,7 +120,7 @@ public sealed class App : Application
         _api = new ApiClient(_settings.ServerUrl!, tokens);
         _api.SignedOut += () => Dispatcher.BeginInvoke(() => EndSession(serverSide: false));
         _sync = new SyncEngine(_settings, _api);
-        _updater = new Updater(_api);
+        _updater = new Updater();
         _updater.Changed += () => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(_updater?.Available?.Version));
         _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };
         _updateTimer.Tick += (_, _) =>

@@ -9,12 +9,13 @@ using CloudClient.Core;
 
 namespace CloudClient.Updates;
 
-/// <summary>A newer build the server offers, already checked against the publisher's signature.</summary>
+/// <summary>A newer build the publisher offers, already checked against the publisher's signature.</summary>
 public sealed record UpdateInfo(Version Version, string Sha256);
 
 /// <summary>
-/// Finds and installs newer builds of this app from the server it is signed
-/// in to. The server offers, as plain text, the latest version (e.g. 1.0.0),
+/// Finds and installs newer builds of this app from the publisher's server
+/// (UpdateSource), the same for everyone whatever server they sign in to.
+/// It offers, as plain text, the latest version (e.g. 1.0.0),
 /// the exe's SHA-256 and the publisher's signature over both. Nothing is
 /// installed unless the signature matches the publisher's key and the
 /// downloaded exe matches that SHA-256, so neither a compromised server nor
@@ -37,7 +38,6 @@ public sealed class Updater
     public static bool Supported => true;
 #endif
 
-    private readonly ApiClient _api;
     private int _busy;
 
     public UpdateInfo? Available { get; private set; }
@@ -48,8 +48,6 @@ public sealed class Updater
 
     /// <summary>Raised from background threads whenever the above change.</summary>
     public event Action? Changed;
-
-    public Updater(ApiClient api) => _api = api;
 
     public async Task CheckAsync()
     {
@@ -62,7 +60,7 @@ public sealed class Updater
             Set(null);
             if (Available is not null) Log.Info($"Update available: version {Available.Version}");
         }
-        catch (Exception ex) when (ex is not SignedOutException)
+        catch (Exception ex)
         {
             Log.Warn($"Could not check for updates: {ex.Message}");
             Set("Could not check for updates. Details are in the log.");
@@ -79,59 +77,43 @@ public sealed class Updater
         var text = await GetTextAsync(UpdateSource.VersionUrl);
         // The server offers no build of this app.
         if (text is null) return null;
-        if (!Version.TryParse(text, out var version)) throw new InvalidDataException("The server's update has no valid version.");
+        if (!Version.TryParse(text, out var version)) throw new InvalidDataException("The published update has no valid version.");
         version = Trim(version);
         if (version <= Current) return null;
 
         var sha256 = (await GetTextAsync(UpdateSource.Sha256Url))?.ToLowerInvariant();
-        if (sha256 is null || sha256.Length != 64 || !sha256.All(Uri.IsHexDigit)) throw new InvalidDataException("The server's update has no valid SHA-256.");
+        if (sha256 is null || sha256.Length != 64 || !sha256.All(Uri.IsHexDigit)) throw new InvalidDataException("The published update has no valid SHA-256.");
         var signature = await GetTextAsync(UpdateSource.SignatureUrl);
         if (signature is null || !IsSigned(version, sha256, signature))
-            throw new InvalidDataException("The server's update is not signed by the publisher; it was not installed.");
+            throw new InvalidDataException("The published update is not signed by the publisher; it was not installed.");
         return new UpdateInfo(version, sha256);
     }
 
     /// <summary>One of the plain-text update files (version, SHA-256, signature); null if there is none.</summary>
-    private async Task<string?> GetTextAsync(string template)
+    private static async Task<string?> GetTextAsync(string url)
     {
-        using var response = await GetAsync(template, stream: false);
+        using var response = await GetAsync(url, stream: false);
         if (response is null) return null;
         var text = (await response.Content.ReadAsStringAsync()).Trim();
         return text.Length is > 0 and < 512 ? text : null;
     }
 
-    /// <summary>
-    /// GETs an UpdateSource URL: on the signed-in server with this device's
-    /// sign-in, or, for a full URL, from that host without it. Null on 404.
-    /// </summary>
-    private async Task<HttpResponseMessage?> GetAsync(string template, bool stream)
+    /// <summary>GETs an update file from the publisher's server; null on 404. No sign-in is ever sent there.</summary>
+    private static async Task<HttpResponseMessage?> GetAsync(string url, bool stream)
     {
-        var url = UpdateSource.For(template);
-        if (UpdateSource.IsExternal(url))
+        var response = await Http.GetAsync(url, stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
         {
-            var response = await External.GetAsync(url, stream ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead);
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-            {
-                response.Dispose();
-                return null;
-            }
-            response.EnsureSuccessStatusCode();
-            return response;
-        }
-        try
-        {
-            return await _api.SendAsync(() => new HttpRequestMessage(HttpMethod.Get, ServerAddress.Api(_api.ServerUrl, url)), CancellationToken.None, stream);
-        }
-        catch (ApiException ex) when (ex.Status == 404)
-        {
+            response.Dispose();
             return null;
         }
+        response.EnsureSuccessStatusCode();
+        return response;
     }
 
-    /// <summary>For update files on another host: no sign-in is ever sent there.</summary>
-    private static readonly HttpClient External = CreateExternal();
+    private static readonly HttpClient Http = CreateHttp();
 
-    private static HttpClient CreateExternal()
+    private static HttpClient CreateHttp()
     {
         var http = ApiClient.CreateHttp(followRedirects: true);
         // The exe is tens of MB; give slow connections time.
@@ -195,7 +177,7 @@ public sealed class Updater
             });
             return true;
         }
-        catch (Exception ex) when (ex is not SignedOutException)
+        catch (Exception ex)
         {
             Log.Error("Could not install the update", ex);
             Set(ex is InvalidDataException ? ex.Message : "The update could not be installed. Details are in the log.");
@@ -212,7 +194,7 @@ public sealed class Updater
     private async Task DownloadAsync(UpdateInfo update, string path)
     {
         using var response = await GetAsync(UpdateSource.ExeUrl, stream: true)
-            ?? throw new InvalidDataException("The server no longer offers the update.");
+            ?? throw new InvalidDataException("The update is no longer published.");
         var length = response.Content.Headers.ContentLength;
         await using var body = await response.Content.ReadAsStreamAsync();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -236,9 +218,9 @@ public sealed class Updater
                 }
             }
         }
-        // The SHA-256 the server published (and the publisher signed) must match before anything is replaced.
+        // The published SHA-256 (which the publisher signed) must match before anything is replaced.
         if (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() != update.Sha256)
-            throw new InvalidDataException("The downloaded update's SHA-256 does not match the server's; it was not installed.");
+            throw new InvalidDataException("The downloaded update's SHA-256 does not match the published one; it was not installed.");
     }
 
     /// <summary>On start after an update: waits for the previous version to quit, then removes it.</summary>

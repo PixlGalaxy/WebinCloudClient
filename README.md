@@ -13,7 +13,7 @@ Requires Windows 10 version 1809 or later, or Windows 11.
 - **Always keep on this device / Free up space.** Both File Explorer menu entries work, on files and whole folders.
 - **Two-way sync.** Changes on the server reach the computer within seconds over a live connection (it retries every 10 seconds when offline). Files and folders created, edited, renamed, moved or deleted on the computer go to the server. If the server refuses (a read-only folder, say), the change is undone locally. Temporary files editors write while saving are never uploaded.
 - **Home and Activity.** The window shows transfers in progress with their speed, totals since the app started, recently synced items, problems, and the log.
-- **Updates.** The app checks the server every few hours and installs a new version with one click, after checking the publisher's signature and the file's SHA-256 (see [Updates](#updates)).
+- **Updates.** The app checks the publisher's server every few hours and installs a new version with one click, after checking the publisher's signature and the file's SHA-256 (see [Updates](#updates)).
 - **Sign-in** with the browser (recommended) or a password. It stays signed in until you sign out or disconnect the device from the website.
 
 ## Installing
@@ -41,12 +41,12 @@ dotnet build src/CloudClient -p:Brand=WebinCloud
 dotnet build src/CloudClient -p:Brand=RyzhellCloud
 
 # Release: both brands into dist/<version>/
-./scripts/build.ps1                    # version from CloudClient.csproj
+./scripts/build.bat                    # or double-click it: asks for the version
 ./scripts/build.ps1 -Version 1.0.0
 ./scripts/build.ps1 -Brand RyzhellCloud
 ```
 
-For each brand, `dist/<version>/` gets:
+The version you give sets the folder, the version stamped on both exes (and in `CloudClient.csproj`) and what goes in the `Version.txt` files. For each brand, `dist/<version>/` gets:
 
 | File | Content |
 | --- | --- |
@@ -59,22 +59,22 @@ And the same names starting with `RyzhellCloud`. During development, builds go t
 
 ## Updates
 
-To publish an update, copy a version's files into the server's clients folder (`/appdata/clients` in Docker):
+Every copy of the app, whatever server it signs in to, takes its updates from the publisher's server only. The address is fixed in `src/CloudClient/Updates/UpdateSource.cs`:
 
-```powershell
-docker cp dist/1.0.0/. webincloud:/appdata/clients/
+```
+https://webincloud.itsgalaxy.com/updates/
 ```
 
-The app reads three plain-text URLs and the exe. They are set in `src/CloudClient/Updates/UpdateSource.cs`:
+To publish a version, upload the files of `dist/<version>/` there as they are:
 
-| Variable | Default | |
-| --- | --- | --- |
-| `VersionUrl` | `client/{brand}/version` | latest version |
-| `Sha256Url` | `client/{brand}/sha256` | the exe's SHA-256 |
-| `SignatureUrl` | `client/{brand}/signature` | the publisher's signature |
-| `ExeUrl` | `client/{brand}/download` | the exe |
+| URL | Content |
+| --- | --- |
+| `.../updates/WebinCloudVersion.txt` | latest version, e.g. `1.0.0` |
+| `.../updates/WebinCloudSha.txt` | the exe's SHA-256 |
+| `.../updates/WebinCloudSignature.txt` | the publisher's signature |
+| `.../updates/WebinCloud.exe` | the exe |
 
-A relative path is on the signed-in server (`<server>/backend/api/...`) and uses the device's sign-in. A full `https://` URL points anywhere else, and the sign-in is never sent there.
+And the same names starting with `RyzhellCloud`. The app checks every few hours and never sends anything about the user's account there.
 
 Before replacing anything, the app checks that:
 
@@ -108,7 +108,7 @@ This writes the private key to `%USERPROFILE%\.webincloud\client-signing-key.blo
 
   The two brands never share state.
 
-To add a brand: add its folder under `branding/` and a `#elif` block in `Brand.cs` with a new COM class id. Then add its name to the checks in `CloudClient.csproj` and `scripts/build.ps1`, and to the server's clients routes.
+To add a brand: add its folder under `branding/` and a `#elif` block in `Brand.cs` with a new COM class id. Then add its name to the checks in `CloudClient.csproj` and `scripts/build.ps1`.
 
 ## Signing in
 
@@ -147,12 +147,13 @@ src/CloudClient/
   Auth/             browser and password sign-in, Credential Manager storage
   Core/             settings, log, start with Windows, installer
   Sync/             sync root, Cloud Files provider, local changes, thumbnails, activity
-  Updates/          update source URLs, public key, updater
+  Updates/          update address, public key, updater
   UI/               theme (Theme.cs + Theme.xaml), controls, dialogs, tray menu
   Views/            setup and main windows (Home, Activity, Settings)
   Assets/Fonts      Rajdhani (SIL OFL 1.1)
   Assets/Lucide     Lucide icons (ISC)
 branding/<Brand>/   icon.png, logo.png, app.ico
+scripts/build.bat   double-click to build: asks for the version, runs build.ps1
 scripts/build.ps1   publish both brands into dist/<version>/
 scripts/new-signing-key.ps1   create the update signing key, once
 ```
