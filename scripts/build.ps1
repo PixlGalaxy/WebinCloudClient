@@ -9,6 +9,7 @@
     <Brand>Version.txt     the version, e.g. 1.0.0
     <Brand>Sha.txt         the exe's SHA-256
     <Brand>Signature.txt   the signature over brand, version and SHA-256
+  and URLs.txt, the link each file is uploaded to.
   for example WebinCloud.exe, WebinCloudSha.txt, RyzhellCloud.exe, RyzhellCloudSha.txt.
   To publish an update, upload a brand's files as they are to its folder on
   the publisher's server (the links are in Updates/UpdateSource.cs).
@@ -115,6 +116,24 @@ foreach ($b in $brands) {
     }
     Write-Host "$b $Version  sha256 $sha256"
 }
+
+# Where each file goes, read from the links the apps use (Updates/UpdateSource.cs).
+$source = [System.IO.File]::ReadAllText((Join-Path $root 'src\CloudClient\Updates\UpdateSource.cs'))
+$folders = @{
+    RyzhellCloud = [regex]::Match($source, '#if BRAND_RYZHELLCLOUD\s+private const string Folder = "([^"]+)"').Groups[1].Value
+    WebinCloud   = [regex]::Match($source, '#else\s+private const string Folder = "([^"]+)"').Groups[1].Value
+}
+$urls = @("Version $Version - upload each file to its link.", "")
+foreach ($b in $brands) {
+    $urls += "$b"
+    foreach ($file in @("$b.exe", "${b}Version.txt", "${b}Sha.txt", "${b}Signature.txt")) {
+        if ($file -like '*Signature.txt' -and -not $sign) { continue }
+        $urls += "  $file"
+        $urls += "    $($folders[$b])$file/download?inline=1&path="
+    }
+    $urls += ""
+}
+[System.IO.File]::WriteAllLines((Join-Path $out 'URLs.txt'), [string[]]$urls, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "Done: $out"
 Write-Host "To publish it, upload each brand's files to its folder: Apps/Dist/WebinCloudClient and Apps/Dist/RyzhellCloudClient."
