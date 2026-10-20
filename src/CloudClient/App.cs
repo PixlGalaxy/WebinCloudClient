@@ -47,7 +47,10 @@ public sealed class App : Application
             return;
         }
 
-        var app = new App(args.Contains(AutoStart.BackgroundArgument));
+        // Started by Windows to serve File Explorer's thumbnails: stay in the tray.
+        var background = args.Contains(AutoStart.BackgroundArgument) ||
+                         args.Any(a => a.Equals(ThumbnailServer.Embedding, StringComparison.OrdinalIgnoreCase) || a.Equals("/Embedding", StringComparison.OrdinalIgnoreCase));
+        var app = new App(background);
         Theme.Apply(app);
 
         // A second launch signals this event; bring the window forward.
@@ -60,6 +63,7 @@ public sealed class App : Application
     {
         Log.Info($"{Brand.Name} starting");
         _tray = new TrayIcon(ShowWindow, TrayItems);
+        ThumbnailServer.Start();
 
         var tokens = _settings.IsSignedIn ? SafeLoadTokens(_settings.ServerUrl!) : null;
         if (tokens is null) ShowSetup();
@@ -166,6 +170,7 @@ public sealed class App : Application
         _tray?.Dispose();
         _events?.Dispose();
         _sync?.Stop();
+        ThumbnailServer.Stop();
         _api?.Dispose();
         Log.Info($"{Brand.Name} closing");
         Shutdown();

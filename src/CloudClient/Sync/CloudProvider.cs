@@ -34,6 +34,10 @@ public sealed class CloudProvider : IDisposable
     private const int ChunkSize = 4 * 1024 * 1024;
     /// <summary>"Always keep on this device": Windows downloads a pinned placeholder by itself.</summary>
     private const FileAttributes Pinned = (FileAttributes)0x00080000;
+    /// <summary>"Free up space": the user wants it back in the cloud only.</summary>
+    private const FileAttributes Unpinned = (FileAttributes)0x00100000;
+    /// <summary>The file's data is not on this computer.</summary>
+    private const FileAttributes CloudOnly = (FileAttributes)0x00400000;
     /// <summary>On a placeholder folder: not listed on this computer yet; opening it lists it from the server.</summary>
     private const FileAttributes NotListed = FileAttributes.Offline;
     /// <summary>Times within this of each other count as equal (FAT-style rounding, clock skew in transfers).</summary>
@@ -187,6 +191,8 @@ public sealed class CloudProvider : IDisposable
                     remoteByName.Remove(item.Name);
                     continue;
                 }
+                // "Keep" or "free up space" chosen while the app was not watching.
+                if (item is FileInfo && (item.Attributes & (Unpinned | Pinned)) != 0) ApplyPinState(item.FullName, isDirectory: false);
                 if (!remoteByName.TryGetValue(item.Name, out var entry))
                 {
                     Remove(item, $"{Join(relative, item.Name)} is gone from the server");
@@ -279,6 +285,56 @@ public sealed class CloudProvider : IDisposable
         {
             Log.Warn($"Could not download \"{path}\" to keep it on this device: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Carries out what File Explorer's menu only marks: "Free up space"
+    /// (unpinned) empties a downloaded file back to a placeholder, and "Always
+    /// keep on this device" (pinned) downloads it. A folder applies it to all
+    /// it holds.
+    /// </summary>
+    private void ApplyPinState(string fullPath, bool isDirectory)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(fullPath);
+            if (isDirectory)
+            {
+                if (!attributes.HasFlag(Unpinned) && !attributes.HasFlag(Pinned)) return;
+                foreach (var file in Directory.EnumerateFiles(fullPath, "*", SearchOption.AllDirectories))
+                {
+                    if (attributes.HasFlag(Unpinned)) FreeUp(file);
+                    else if (File.GetAttributes(file).HasFlag(CloudOnly)) _ = Task.Run(() => Hydrate(file));
+                }
+                if (attributes.HasFlag(Unpinned)) File.SetAttributes(fullPath, attributes & ~Unpinned);
+                return;
+            }
+
+            var cloudOnly = attributes.HasFlag(CloudOnly);
+            if (attributes.HasFlag(Unpinned)) FreeUp(fullPath);
+            else if (attributes.HasFlag(Pinned) && cloudOnly) _ = Task.Run(() => Hydrate(fullPath));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not apply \"keep\" or \"free up space\" to \"{fullPath}\": {ex.Message}");
+        }
+    }
+
+    /// <summary>Back to a cloud-only placeholder, then the request mark is cleared so opening it later just downloads it.</summary>
+    private static void FreeUp(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        if (!attributes.HasFlag(CloudOnly))
+        {
+            CfOpenFileWithOplock(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE, out var protectedHandle).ThrowIfFailed();
+            using (protectedHandle)
+            {
+                CfDehydratePlaceholder(CfGetWin32HandleFromProtectedHandle(protectedHandle), 0, -1, CF_DEHYDRATE_FLAGS.CF_DEHYDRATE_FLAG_NONE, IntPtr.Zero)
+                    .ThrowIfFailed();
+            }
+            Log.Info($"Freed up space: \"{path}\"");
+        }
+        File.SetAttributes(path, File.GetAttributes(path) & ~Unpinned);
     }
 
     private static bool Changed(FileInfo local, RemoteEntry remote) =>
@@ -477,7 +533,11 @@ public sealed class CloudProvider : IDisposable
         if (relative.StartsWith("..") || relative == "." || relative.Split('/').Any(IsIgnored)) return true;
         var isDirectory = Directory.Exists(fullPath);
         if (!isDirectory && !File.Exists(fullPath)) return true;
-        if (IsSynced(fullPath)) return true;
+        if (IsSynced(fullPath))
+        {
+            ApplyPinState(fullPath, isDirectory);
+            return true;
+        }
 
         try
         {
@@ -618,6 +678,9 @@ public sealed class CloudProvider : IDisposable
         var offset = fetch.RequiredFileOffset;
         var length = fetch.RequiredLength;
         var fileSize = info.FileSize;
+
+        var who = info.ProcessInfo.IsNull ? null : info.ProcessInfo.Value?.ImagePath;
+        if (offset == 0) Log.Info($"Downloading \"{relative}\" for {Path.GetFileName(who) ?? "an unknown program"}");
 
         var cancel = new CancellationTokenSource();
         _transfers[transfer] = cancel;

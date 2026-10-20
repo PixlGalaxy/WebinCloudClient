@@ -12,6 +12,8 @@ public static class Brand
     public const string Id = "RyzhellCloud";
     /// <summary>Shown to people.</summary>
     public const string Name = "Ryzhell Cloud";
+    /// <summary>COM class of the File Explorer thumbnail provider; one per brand so both can be installed.</summary>
+    public const string ThumbnailProviderClsid = "CA19E048-C5D3-405C-B513-A1E2D55CC8DE";
 
     public static readonly Palette Colors = new(
         WindowBg: "#181D31",
@@ -33,6 +35,8 @@ public static class Brand
     public const string Id = "WebinCloud";
     /// <summary>Shown to people.</summary>
     public const string Name = "Webin Cloud";
+    /// <summary>COM class of the File Explorer thumbnail provider; one per brand so both can be installed.</summary>
+    public const string ThumbnailProviderClsid = "8ADA4C5C-EF07-41AC-93B1-B85BC2D75ACD";
 
     public static readonly Palette Colors = new(
         WindowBg: "#0B0B0D",

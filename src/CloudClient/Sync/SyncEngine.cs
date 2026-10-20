@@ -45,6 +45,8 @@ public sealed class SyncEngine : IDisposable
             await SyncRoot.RegisterAsync(id, _settings.SyncFolder, _api.ServerUrl);
             _settings.SyncRootId = id;
             _settings.Save();
+            ThumbnailServer.AttachTo(id);
+            ThumbnailServer.Serve(_api, _settings.SyncFolder);
 
             _provider = new CloudProvider(_api, _settings.SyncFolder);
             _provider.Connect();
@@ -62,6 +64,7 @@ public sealed class SyncEngine : IDisposable
     /// <summary>Stops answering Windows; the drive stays registered, as when the app quits.</summary>
     public void Stop()
     {
+        ThumbnailServer.Serve(null, null);
         _provider?.Dispose();
         _provider = null;
     }

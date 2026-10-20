@@ -31,7 +31,8 @@ public sealed class LocalChanges : IDisposable
         _watcher = new FileSystemWatcher(root)
         {
             IncludeSubdirectories = true,
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size,
+            // Attributes: File Explorer's "Always keep on this device" and "Free up space" only set them.
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
             InternalBufferSize = 64 * 1024,
         };
         _watcher.Created += (_, e) => Touch(e.FullPath);
