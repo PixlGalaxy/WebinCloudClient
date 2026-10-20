@@ -59,22 +59,23 @@ And the same names starting with `RyzhellCloud`. During development, builds go t
 
 ## Updates
 
-Every copy of the app, whatever server it signs in to, takes its updates from the publisher's server only. The address is fixed in `src/CloudClient/Updates/UpdateSource.cs`:
+Every copy of the app, whatever server it signs in to, takes its updates from public links on the publisher's server only. They are fixed per brand in `src/CloudClient/Updates/UpdateSource.cs`:
 
 ```
-https://webincloud.itsgalaxy.com/updates/
+https://webincloud.itzgalaxy.com/backend/api/public/durazznoapp/DurazznoApp/Apps/Dist/WebinCloudClient/
+https://webincloud.itzgalaxy.com/backend/api/public/durazznoapp/DurazznoApp/Apps/Dist/RyzhellCloudClient/
 ```
 
-To publish a version, upload the files of `dist/<version>/` there as they are:
+To publish a version, upload the files of `dist/<version>/` to the brand's folder as they are:
 
-| URL | Content |
+| File | Content |
 | --- | --- |
-| `.../updates/WebinCloudVersion.txt` | latest version, e.g. `1.0.0` |
-| `.../updates/WebinCloudSha.txt` | the exe's SHA-256 |
-| `.../updates/WebinCloudSignature.txt` | the publisher's signature |
-| `.../updates/WebinCloud.exe` | the exe |
+| `WebinCloudVersion.txt` | latest version, e.g. `1.0.0` |
+| `WebinCloudSha.txt` | the exe's SHA-256 |
+| `WebinCloudSignature.txt` | the publisher's signature |
+| `WebinCloud.exe` | the exe |
 
-And the same names starting with `RyzhellCloud`. The app checks every few hours and never sends anything about the user's account there.
+And the same names starting with `RyzhellCloud` in `RyzhellCloudClient/`. The app checks every few hours and never sends anything about the user's account there.
 
 Before replacing anything, the app checks that:
 

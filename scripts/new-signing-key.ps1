@@ -21,7 +21,9 @@ if (Test-Path $Path) { throw "A key already exists at $Path. Delete it first if 
 
 $parameters = New-Object System.Security.Cryptography.CngKeyCreationParameters
 $parameters.ExportPolicy = [System.Security.Cryptography.CngExportPolicies]::AllowPlaintextExport
-$key = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::ECDsaP256, $null, $parameters)
+# [NullString]::Value, not $null: PowerShell turns $null into "", which would
+# store the key in Windows under that name instead of only in the file.
+$key = [System.Security.Cryptography.CngKey]::Create([System.Security.Cryptography.CngAlgorithm]::ECDsaP256, [NullString]::Value, $parameters)
 
 New-Item -ItemType Directory -Force (Split-Path -Parent $Path) | Out-Null
 [System.IO.File]::WriteAllBytes($Path, $key.Export([System.Security.Cryptography.CngKeyBlobFormat]::EccPrivateBlob))
