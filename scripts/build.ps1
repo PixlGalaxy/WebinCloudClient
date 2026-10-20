@@ -10,14 +10,14 @@
     <Brand>Sha.txt         the exe's SHA-256
     <Brand>Signature.txt   the signature over brand, version and SHA-256
   for example WebinCloud.exe, WebinCloudSha.txt, RyzhellCloud.exe, RyzhellCloudSha.txt.
-  To publish an update, copy the four files of a brand into the server's
-  clients folder (/appdata/clients in Docker). The server offers the version,
-  SHA-256 and signature as plain text; the app installs the exe only when the
-  signature was made with the key from new-signing-key.ps1 and the exe it
-  downloaded matches the SHA-256.
+  To publish an update, upload these files as they are to
+  https://webincloud.itsgalaxy.com/updates/ (see Updates/UpdateSource.cs).
+  The app installs the exe only when the signature was made with the key from
+  new-signing-key.ps1 and the exe it downloaded matches the SHA-256.
 
 .EXAMPLE
-  ./scripts/build.ps1                          # both brands, version from CloudClient.csproj
+  ./scripts/build.bat                          # double-click: asks for the version, builds both brands
+  ./scripts/build.ps1                          # same, from PowerShell
   ./scripts/build.ps1 -Version 0.2.0           # both brands as 0.2.0
   ./scripts/build.ps1 -Brand RyzhellCloud      # one brand only
 #>
@@ -26,7 +26,7 @@ param(
     [string]$Brand = 'All',
     [ValidateSet('win-x64', 'win-arm64')]
     [string]$Runtime = 'win-x64',
-    # Defaults to <Version> in CloudClient.csproj.
+    # Asked for when not given.
     [string]$Version = '',
     [string]$SigningKey = (Join-Path $env:USERPROFILE '.webincloud\client-signing-key.blob')
 )
@@ -35,8 +35,19 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root 'src\CloudClient\CloudClient.csproj'
 
-if (-not $Version) { $Version = ([xml](Get-Content $project)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1 }
-if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw "Version must look like 1.2.3, got '$Version'" }
+$current = ([xml](Get-Content $project)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+while ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    if ($Version) { Write-Host "  '$Version' is not a version like 1.2.3." -ForegroundColor Yellow }
+    $Version = (Read-Host "Version to publish (current $current)").Trim()
+}
+
+# The version is also the project's from now on, so debug builds show it too.
+if ($Version -ne $current) {
+    $text = [System.IO.File]::ReadAllText($project)
+    $text = $text -replace '<Version>[^<]*</Version>', "<Version>$Version</Version>"
+    [System.IO.File]::WriteAllText($project, $text, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host "CloudClient.csproj: version $current -> $Version"
+}
 
 # x64 builds go straight in dist/<version>; other runtimes in a subfolder.
 $out = Join-Path $root "dist\$Version"
@@ -75,4 +86,4 @@ foreach ($b in $brands) {
 }
 
 Write-Host "Done: $out"
-Write-Host "To offer an update, copy a brand's .exe, Version.txt, Sha.txt and Signature.txt to the server's clients folder."
+Write-Host "To publish it, upload these files to https://webincloud.itsgalaxy.com/updates/"
