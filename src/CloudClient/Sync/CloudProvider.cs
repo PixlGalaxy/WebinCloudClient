@@ -168,9 +168,16 @@ public sealed partial class CloudProvider : IDisposable
 
     /// <summary>
     /// The server changed a folder: brings it in line, then lists any of its
-    /// subfolders not listed yet (a folder just added there, say).
+    /// subfolders not listed yet (a folder just added there, say). A folder
+    /// not here yet (one uploaded from the web, whose parents the server
+    /// creates without a notice of their own) is reached through its nearest
+    /// parent that is here.
     /// </summary>
-    public Task ReconcileAsync(string relative) => WalkAsync(relative, everything: false);
+    public Task ReconcileAsync(string relative)
+    {
+        while (relative != "" && !Directory.Exists(LocalPath(relative))) relative = ParentOf(relative);
+        return WalkAsync(relative, everything: false);
+    }
 
     /// <summary>
     /// After (re)connecting: every folder, top down, to catch up on what
