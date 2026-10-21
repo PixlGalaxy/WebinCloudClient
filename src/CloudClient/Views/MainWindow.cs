@@ -5,6 +5,8 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using CloudClient.Api;
 using CloudClient.Core;
@@ -132,11 +134,18 @@ public sealed class MainWindow : AppWindow
         DockPanel.SetDock(brand, Dock.Top);
         panel.Children.Add(brand);
 
-        var version = Ui.Text($"v{Updater.Current}", "CardHint");
-        version.SetResourceReference(TextBlock.ForegroundProperty, "TextDim");
-        version.Margin = new Thickness(30, 0, 0, 20);
-        DockPanel.SetDock(version, Dock.Bottom);
-        panel.Children.Add(version);
+        var footer = new Border
+        {
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(26, 14, 20, 16),
+            Child = Ui.Stack(
+                FooterLine($"2026 {Brand.Id}Client", "TextMuted"),
+                FooterLine("ItzGalaxy Web Services", "TextDim"),
+                FooterLine($"Version: {Updater.Current}", "TextDim")),
+        };
+        footer.SetResourceReference(Border.BorderBrushProperty, "Divider");
+        DockPanel.SetDock(footer, Dock.Bottom);
+        panel.Children.Add(footer);
 
         var nav = new StackPanel();
         nav.Children.Add(NavItem("Home", "house", true, ShowHome));
@@ -149,6 +158,14 @@ public sealed class MainWindow : AppWindow
         sidebar.SetResourceReference(Border.BackgroundProperty, "SidebarBg");
         sidebar.SetResourceReference(Border.BorderBrushProperty, "Divider");
         return sidebar;
+    }
+
+    private static TextBlock FooterLine(string text, string brushKey)
+    {
+        var line = new TextBlock { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 13, Margin = new Thickness(0, 1, 0, 0) };
+        line.SetResourceReference(TextBlock.FontFamilyProperty, "HeadingFont");
+        line.SetResourceReference(TextBlock.ForegroundProperty, brushKey);
+        return line;
     }
 
     private static RadioButton NavItem(string text, string icon, bool selected, Action show)
@@ -210,19 +227,20 @@ public sealed class MainWindow : AppWindow
             Gap(Ui.Text(_settings.DeviceName, "Body"), 4)));
 
         var ready = _sync.IsRunning;
-        var (chipIcon, tone, chip, state) = _sync.Problem is not null
-            ? ("cloud-off", "Warning", "WarningChip", "Not available")
-            : ready ? ("cloud-check", "Success", "SuccessChip", "On") : ("cloud", "Accent", "AccentChip", "Starting…");
+        var (tone, chip, state) = _sync.Problem is not null
+            ? ("Warning", "WarningChip", "Not available")
+            : ready ? ("Success", "SuccessChip", "Synced") : ("Accent", "AccentChip", "Starting…");
         var openFolder = Ui.Button("Open folder", "folder-open", "SecondaryButton", (_, _) =>
             Process.Start(new ProcessStartInfo(_settings.SyncFolder) { UseShellExecute = true }));
         openFolder.HorizontalAlignment = HorizontalAlignment.Left;
         openFolder.IsEnabled = ready;
-        var sync = Ui.Card(Ui.Stack(
-            Ui.PanelTitle("Files"),
-            Gap(Ui.Row(Ui.IconChip(chipIcon, tone, chip, 44, 22),
-                Spaced(Ui.Stack(Ui.Text("Files On-Demand", "PanelTitleText"), Ui.Text(state, "CardHint")), 14)), 16),
-            Gap(Ui.Text(_sync.Problem ?? $"Your files are in File Explorer under {Brand.Name}, in {_settings.SyncFolder}. They take no space until you open them.", "Body"), 14),
-            Gap(openFolder, 16)));
+        var files = Ui.Stack(
+            Ui.Row(Ui.PanelTitle("Files"), Spaced(Badge(state, tone, chip), 12)),
+            Gap(Label("Folder"), 16),
+            Gap(Ui.Text(_settings.SyncFolder, "Mono"), 4));
+        if (_sync.Problem is not null) files.Children.Add(Gap(Ui.Sentence(_sync.Problem, "Warning"), 14));
+        files.Children.Add(Gap(openFolder, 18));
+        var sync = Ui.Card(files);
 
         _updateBox = new ContentControl();
         FillUpdate();
@@ -238,7 +256,7 @@ public sealed class MainWindow : AppWindow
         stats.Children.Add(Stat("download", "Success", "Downloaded", _downTotal));
         _transfersBox = new StackPanel();
         var transfers = Ui.Card(Ui.Stack(
-            TitleWithLink("Transfers", "", () => { }, "Since the app started"),
+            Ui.PanelTitle("Transfers"),
             Gap(stats, 18), Gap(_transfersBox, 14)));
 
         _recentBox = new StackPanel();
@@ -308,11 +326,58 @@ public sealed class MainWindow : AppWindow
         }
         else
         {
-            if (update is not null) check.Margin = new Thickness(10, 0, 0, 0);
-            var where = $"Installed in {Path.GetDirectoryName(Environment.ProcessPath)}.";
-            _updateBox.Content = Ui.Stack(lines, Gap(Ui.Sentence(where, "TextDim"), 6), Gap(Ui.Row(install, check), 16));
+            var apply = Ui.Button("Apply update", "download", "PrimaryButton", (_, _) => _installUpdate());
+            apply.IsEnabled = update is not null && !_updater.IsBusy;
+            apply.Margin = new Thickness(10, 0, 0, 0);
+            var rows = Ui.Stack(
+                SettingRow("Installed", Ui.Text($"{Brand.Name} {Updater.Current}", "Body")),
+                SettingRow("Latest", Ui.Text(LatestText(), "Body")),
+                SettingRow("Connection", ServerStatus()));
+            // Something the rows do not say: a release that is not signed, say.
+            if (_updater.Status is { } problem && _updater.Reachable == true && !_updater.IsBusy)
+                rows.Children.Add(Gap(Ui.Sentence(problem, "Warning"), 14));
+            rows.Children.Add(Gap(Ui.Row(check, apply), 22));
+            _updateBox.Content = rows;
         }
     }
+
+    private string LatestText()
+    {
+        if (_updater.Ready is { } ready) return $"{ready.Version}  (downloaded, installs on next start)";
+        if (_updater.Latest is not { } latest) return _updater.IsBusy ? "Checking…" : "Not checked yet";
+        return latest > Updater.Current ? $"{latest}  (update available)" : $"{latest}  (up to date)";
+    }
+
+    /// <summary>Webin Cloud Server's logo and whether it answered the last update check.</summary>
+    private UIElement ServerStatus()
+    {
+        var checkedAt = _updater.LastChecked is { } at ? $"  ·  checked {at:HH:mm}" : "";
+        var (text, brush) = _updater.IsBusy ? ("Connecting…", "Warning")
+            : _updater.Reachable switch
+            {
+                true => ($"Online (Webin Cloud Server){checkedAt}", "Success"),
+                false => ($"Webin Cloud Server unreachable{checkedAt}", "Danger"),
+                null => ("Not checked yet", "TextMuted"),
+            };
+        var logo = new Image { Source = new BitmapImage(new Uri("pack://application:,,,/Assets/webincloud.png")), Width = 22, Height = 22 };
+        RenderOptions.SetBitmapScalingMode(logo, BitmapScalingMode.HighQuality);
+        return Ui.Row(logo, Spaced(Ui.Sentence(text, brush), 10));
+    }
+
+    /// <summary>A label on the left, its value on the right (as Durazzno App lays out its settings).</summary>
+    private static UIElement SettingRow(string label, UIElement value)
+    {
+        var grid = new Grid { Margin = new Thickness(0, 16, 0, 0) };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(150) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        var text = Label(label);
+        text.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(text);
+        Grid.SetColumn(value, 1);
+        grid.Children.Add(value);
+        return grid;
+    }
+
 
     // --- Activity --------------------------------------------------------------------
 
@@ -529,11 +594,13 @@ public sealed class MainWindow : AppWindow
         var openLogs = Ui.Link("Open the log folder", (_, _) => Process.Start(new ProcessStartInfo(AppPaths.DataDir) { UseShellExecute = true }));
         var about = Ui.Card(Ui.Stack(
             Ui.PanelTitle("About"),
-            Gap(Ui.Text($"{Brand.Name} for Windows, version {Updater.Current}", "Body"), 14),
+            Gap(Ui.Text($"{Brand.Id}Client For Windows | Version: {Updater.Current}", "Body"), 14),
             Gap(openLogs, 10)));
 
         SetPage("settings", Ui.Stack(header, Gap(general, 26), Gap(updates, 20), Gap(account, 20), Gap(about, 20)));
         FillUpdate();
+        // The first scheduled check waits a couple of minutes after start; opening Settings does not wait.
+        if (_updater.LastChecked is null) _ = _updater.CheckAsync();
     }
 
     public static void OpenWebsite(string url) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });

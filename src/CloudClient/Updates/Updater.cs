@@ -51,6 +51,10 @@ public sealed class Updater
     /// <summary>Downloaded, checked and waiting to be installed; null if there is none.</summary>
     public UpdateInfo? Ready { get; private set; }
     public DateTime? LastChecked { get; private set; }
+    /// <summary>The version published on Webin Cloud Server at the last check; null until one succeeds.</summary>
+    public Version? Latest { get; private set; }
+    /// <summary>Whether Webin Cloud Server answered the last check; null before the first one.</summary>
+    public bool? Reachable { get; private set; }
     /// <summary>What the updater is doing or what went wrong, in words; null when idle.</summary>
     public string? Status { get; private set; }
     public bool IsBusy => Volatile.Read(ref _busy) == 1;
@@ -69,14 +73,15 @@ public sealed class Updater
     /// <summary>Looks for a newer version and, if there is one, downloads and checks it.</summary>
     public async Task CheckAsync()
     {
-        if (!Supported) return;
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         Set("Checking for updates…");
         try
         {
             var found = await FindAsync();
             LastChecked = DateTime.Now;
-            if (found is null)
+            Reachable = true;
+            // A development build only shows what is published; it never downloads it.
+            if (found is null || !Supported)
             {
                 Set(null);
                 return;
@@ -97,6 +102,9 @@ public sealed class Updater
         }
         catch (Exception ex)
         {
+            // Answered but with something unusable (unsigned, malformed): the server itself is up.
+            Reachable = ex is InvalidDataException;
+            LastChecked = DateTime.Now;
             // Checked every few minutes: log a problem once, not on every check.
             if (ex.Message != _lastProblem) Log.Warn($"Could not update: {ex.Message}");
             _lastProblem = ex.Message;
@@ -109,13 +117,14 @@ public sealed class Updater
         }
     }
 
-    private static async Task<UpdateInfo?> FindAsync()
+    private async Task<UpdateInfo?> FindAsync()
     {
         var text = await GetTextAsync(UpdateSource.VersionUrl);
         // Nothing published for this app.
         if (text is null) return null;
         if (!Version.TryParse(text, out var version)) throw new InvalidDataException("The published update has no valid version.");
         version = Trim(version);
+        Latest = version;
         if (version <= Current) return null;
 
         var sha256 = (await GetTextAsync(UpdateSource.Sha256Url))?.ToLowerInvariant();

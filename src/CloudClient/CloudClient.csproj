@@ -46,6 +46,8 @@
     <Resource Include="..\..\branding\$(Brand)\icon.png" Link="Brand\icon.png" />
     <Resource Include="..\..\branding\$(Brand)\logo.png" Link="Brand\logo.png" />
     <Resource Include="..\..\branding\$(Brand)\app.ico" Link="Brand\app.ico" />
+    <!-- Webin Cloud Server's logo, next to its status in Settings (the same in both brands). -->
+    <Resource Include="..\..\branding\WebinCloud\icon.png" Link="Assets\webincloud.png" />
   </ItemGroup>
 
   <ItemGroup>

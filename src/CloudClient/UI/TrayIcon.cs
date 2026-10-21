@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Threading;
 using CloudClient.UI.Controls;
 using Forms = System.Windows.Forms;
 
@@ -17,16 +18,27 @@ public sealed class TrayIcon : IDisposable
 {
     private readonly Forms.NotifyIcon _icon;
     private readonly Func<IReadOnlyList<TrayItem>> _items;
+    private readonly System.Drawing.Bitmap _logo;
+    /// <summary>Steps the moving badges (uploading, downloading).</summary>
+    private readonly DispatcherTimer _frames = new() { Interval = TimeSpan.FromMilliseconds(110) };
+    private TrayState _state;
+    private int _frame;
 
     public TrayIcon(Action open, Func<IReadOnlyList<TrayItem>> items)
     {
         _items = items;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Brand/app.ico")).Stream;
+        using (var logo = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize)) _logo = logo.ToBitmap();
         _icon = new Forms.NotifyIcon
         {
-            Icon = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize),
+            Icon = TrayBadge.Draw(_logo, TrayState.None, 0),
             Text = Brand.Name,
             Visible = true,
+        };
+        _frames.Tick += (_, _) =>
+        {
+            _frame = (_frame + 1) % TrayBadge.Frames;
+            Redraw();
         };
         _icon.BalloonTipClicked += (_, _) =>
         {
@@ -40,6 +52,24 @@ public sealed class TrayIcon : IDisposable
     }
 
     public void SetStatus(string status) => _icon.Text = Truncate($"{Brand.Name} - {status}", 63);
+
+    /// <summary>The badge on the icon; moving ones animate until the state changes. Call on the UI thread.</summary>
+    public void SetState(TrayState state)
+    {
+        if (state == _state) return;
+        _state = state;
+        _frame = 0;
+        if (TrayBadge.IsAnimated(state)) _frames.Start();
+        else _frames.Stop();
+        Redraw();
+    }
+
+    private void Redraw()
+    {
+        var old = _icon.Icon;
+        _icon.Icon = TrayBadge.Draw(_logo, _state, _frame);
+        old?.Dispose();
+    }
 
     private Version? _announced;
 
@@ -135,7 +165,9 @@ public sealed class TrayIcon : IDisposable
 
     public void Dispose()
     {
+        _frames.Stop();
         _icon.Visible = false;
         _icon.Dispose();
+        _logo.Dispose();
     }
 }

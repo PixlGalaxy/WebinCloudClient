@@ -28,6 +28,10 @@ public sealed class App : Application
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly bool _background;
     private TrayIcon? _tray;
+    /// <summary>Re-reads what the tray badge should show.</summary>
+    private readonly DispatcherTimer _trayTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+    /// <summary>Whether the live connection to the server is up; null while connecting or signed out.</summary>
+    private bool? _online;
     private ApiClient? _api;
     private ServerEvents? _events;
     private SyncEngine? _sync;
@@ -92,6 +96,8 @@ public sealed class App : Application
         ThumbnailServer.Start();
         _updater.ReadyToInstall += version => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(version));
         _tray.UpdateClicked += InstallUpdate;
+        _trayTimer.Tick += (_, _) => _tray?.SetState(TrayStateNow());
+        _trayTimer.Start();
         _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };
         _updateTimer.Tick += (_, _) =>
         {
@@ -128,7 +134,11 @@ public sealed class App : Application
         _main = new MainWindow(_settings, _api, _sync, _updater, InstallUpdate, () => EndSession(serverSide: true));
         _tray?.SetStatus("Connecting…");
         _events = new ServerEvents(_api);
-        _events.ConnectionChanged += connected => Dispatcher.BeginInvoke(() => _tray?.SetStatus(connected ? "Connected" : "Offline, retrying"));
+        _events.ConnectionChanged += connected => Dispatcher.BeginInvoke(() =>
+        {
+            _online = connected;
+            _tray?.SetStatus(connected ? "Connected" : "Offline, retrying");
+        });
         _sync.Attach(_events);
         // The drive first, so the catch-up on connecting finds it ready.
         _ = _sync.StartAsync().ContinueWith(_ => _events?.Start());
@@ -137,6 +147,7 @@ public sealed class App : Application
 
     private void ShowSetup()
     {
+        _online = null;
         _tray?.SetStatus("Not signed in");
         if (_setup is not null)
         {
@@ -180,6 +191,20 @@ public sealed class App : Application
         ShowSetup();
     }
 
+    /// <summary>
+    /// Red when the drive could not start or the server is out of reach;
+    /// purple going up, blue coming down, green when everything is synced.
+    /// </summary>
+    private TrayState TrayStateNow()
+    {
+        if (_sync is null || _online is null) return TrayState.None;
+        if (_sync.Problem is not null || _online == false) return TrayState.Error;
+        var transfers = Activity.Transfers();
+        var up = transfers.Any(t => t.Direction == Direction.Up);
+        var down = transfers.Any(t => t.Direction == Direction.Down);
+        return up && down ? TrayState.Syncing : up ? TrayState.Uploading : down ? TrayState.Downloading : TrayState.Synced;
+    }
+
     private void ShowWindow()
     {
         if (_main is null)
@@ -211,6 +236,7 @@ public sealed class App : Application
     private void Quit()
     {
         if (_main is not null) _main.ExitRequested = true;
+        _trayTimer.Stop();
         _tray?.Dispose();
         _events?.Dispose();
         _sync?.Stop();
