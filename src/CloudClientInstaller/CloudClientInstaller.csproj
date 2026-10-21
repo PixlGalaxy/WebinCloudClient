@@ -63,6 +63,8 @@
               Link="Assets\Fonts\%(Filename)%(Extension)" />
     <Resource Include="..\..\branding\$(Brand)\app.ico" Link="Brand\app.ico" />
     <Resource Include="..\..\branding\$(Brand)\icon.png" Link="Brand\icon.png" />
+    <!-- Webin Cloud Server's logo, for the page that checks the release on it (the same in both brands). -->
+    <Resource Include="..\..\branding\WebinCloud\icon.png" Link="Assets\webincloud.png" />
   </ItemGroup>
 
 </Project>

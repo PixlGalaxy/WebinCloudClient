@@ -97,7 +97,7 @@ internal sealed class InstallerWindow : Window
             Spaced(Text($"Desktop and Start menu shortcuts are added. After you sign in, your files appear in File Explorer under {Brand.Name}.", "Body"), 10)));
         Show(Stack(Logo(),
                 Spaced(Text($"{Brand.Name} Installer", "PageTitle"), 16),
-                Spaced(Text($"Gets {Brand.Name} for Windows from the publisher's server, makes sure it's the signed release and installs it.", "Body"), 6),
+                Spaced(Text($"Gets {Brand.Name} for Windows from Webin Cloud Server, makes sure it's the signed release and installs it.", "Body"), 6),
                 Spaced(location, 22)),
             Button("CANCEL", "SecondaryButton", Close),
             Button("NEXT", "PrimaryButton", () => _ = CheckAsync()));
@@ -186,13 +186,14 @@ internal sealed class InstallerWindow : Window
 
     private async Task CheckAsync()
     {
-        var server = new StatusRow("Publisher's server", "Connecting…");
+        var server = new StatusRow("Webin Cloud Server", "Connecting…");
         var signed = new StatusRow("Signed release", "Waiting…");
         var file = new StatusRow($"{Brand.Name} download", "Waiting…");
         var rows = Card(Stack(server, Spaced(signed, 16), Spaced(file, 16)));
         var note = new ContentControl { Focusable = false };
         var cancel = Button("CANCEL", "SecondaryButton", Close);
-        Show(Stack(Logo(),
+        // Releases of every brand come from Webin Cloud Server: this page shows its logo.
+        Show(Stack(Logo(ServerIcon()),
                 Spaced(Text("Checking the release", "PageTitle"), 14),
                 Spaced(Text($"Making sure the server is online and {Brand.Name} is there and signed before anything is installed.", "Body"), 6),
                 Spaced(rows, 22), note),
@@ -391,14 +392,16 @@ internal sealed class InstallerWindow : Window
         return button;
     }
 
-    private static Image Logo()
+    private static Image Logo(ImageSource? source = null)
     {
-        var logo = new Image { Source = BrandIcon(), Width = 76, Height = 76, HorizontalAlignment = HorizontalAlignment.Left };
+        var logo = new Image { Source = source ?? BrandIcon(), Width = 76, Height = 76, HorizontalAlignment = HorizontalAlignment.Left };
         RenderOptions.SetBitmapScalingMode(logo, BitmapScalingMode.HighQuality);
         return logo;
     }
 
     private static BitmapImage BrandIcon() => new(new Uri("pack://application:,,,/Brand/icon.png"));
+
+    private static BitmapImage ServerIcon() => new(new Uri("pack://application:,,,/Assets/webincloud.png"));
 
     private FrameworkElement Card(UIElement child) =>
         new ChamferBorder { Background = B("PanelBg"), BorderBrush = B("PanelBorder"), Padding = new Thickness(20, 18, 20, 18), Chamfer = 14, Child = child };
