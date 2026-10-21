@@ -309,7 +309,7 @@ public sealed class MainWindow : AppWindow
         else
         {
             if (update is not null) check.Margin = new Thickness(10, 0, 0, 0);
-            var where = Installer.IsRunningInstalled ? $"Installed in {Installer.InstallDir}." : $"Running from {Environment.ProcessPath}.";
+            var where = $"Installed in {Path.GetDirectoryName(Environment.ProcessPath)}.";
             _updateBox.Content = Ui.Stack(lines, Gap(Ui.Sentence(where, "TextDim"), 6), Gap(Ui.Row(install, check), 16));
         }
     }

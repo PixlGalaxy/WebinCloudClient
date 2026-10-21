@@ -51,16 +51,6 @@ public sealed class App : Application
     [STAThread]
     public static void Main(string[] args)
     {
-        if (args.Contains(Installer.UninstallArgument))
-        {
-            Installer.Uninstall();
-            return;
-        }
-        if (Installer.ShouldInstall(args))
-        {
-            Installer.Install();
-            return;
-        }
         Updater.FinishPrevious(args);
         // The app is in English throughout, dates and numbers included, whatever the Windows language.
         var english = System.Globalization.CultureInfo.GetCultureInfo("en-US");
@@ -100,7 +90,6 @@ public sealed class App : Application
         Log.Info($"{Brand.Name} {Updater.Current} starting from {Environment.ProcessPath}");
         _tray = new TrayIcon(ShowWindow, TrayItems);
         ThumbnailServer.Start();
-        Installer.Refresh();
         _updater.ReadyToInstall += version => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(version));
         _tray.UpdateClicked += InstallUpdate;
         _updateTimer = new DispatcherTimer { Interval = FirstUpdateCheck };

@@ -9,6 +9,7 @@
     <Brand>Version.txt     the version, e.g. 1.0.0
     <Brand>Sha.txt         the exe's SHA-256
     <Brand>Signature.txt   the signature over brand, version and SHA-256
+    <Brand>Installer.exe   the installer to give people (installs, repairs, uninstalls)
   and URLs.txt, the link each file is uploaded to.
   for example WebinCloud.exe, WebinCloudSha.txt, RyzhellCloud.exe, RyzhellCloudSha.txt.
   To publish an update, upload a brand's files as they are to its folder on
@@ -37,6 +38,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $root 'src\CloudClient\CloudClient.csproj'
+$installerProject = Join-Path $root 'src\CloudClientInstaller\CloudClientInstaller.csproj'
 
 $current = ([xml](Get-Content $project)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 while ($Version -notmatch '^\d+\.\d+\.\d+$') {
@@ -115,6 +117,12 @@ foreach ($b in $brands) {
         [System.IO.File]::WriteAllText((Join-Path $out "${b}Signature.txt"), "$signature`n", $utf8)
     }
     Write-Host "$b $Version  sha256 $sha256"
+
+    # The installer people download: it always installs the latest published exe, so it only changes when its code does.
+    $installerStaging = Join-Path $root "artifacts\$b\publish\installer"
+    dotnet build $installerProject -c Release "-p:Brand=$b" -o $installerStaging
+    if ($LASTEXITCODE -ne 0) { throw "Building the installer failed for $b" }
+    Copy-Item (Join-Path $installerStaging "${b}Installer.exe") (Join-Path $out "${b}Installer.exe") -Force
 }
 
 # Where each file goes, read from the links the apps use (Updates/UpdateSource.cs).
@@ -126,7 +134,7 @@ $folders = @{
 $urls = @("Version $Version - upload each file to its link.", "")
 foreach ($b in $brands) {
     $urls += "$b"
-    foreach ($file in @("$b.exe", "${b}Version.txt", "${b}Sha.txt", "${b}Signature.txt")) {
+    foreach ($file in @("$b.exe", "${b}Version.txt", "${b}Sha.txt", "${b}Signature.txt", "${b}Installer.exe")) {
         if ($file -like '*Signature.txt' -and -not $sign) { continue }
         $urls += "  $file"
         $urls += "    $($folders[$b])$file/download?inline=1&path="

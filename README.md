@@ -12,24 +12,32 @@ Requires Windows 10 version 1809 or later, or Windows 11.
 - **Thumbnails without downloading.** Photos and videos that are only in the cloud show their thumbnail, fetched from the server, not the file.
 - **Always keep on this device / Free up space.** Both File Explorer menu entries work, on files and whole folders.
 - **Two-way sync.** Changes on the server reach the computer within seconds over a live connection (it retries every 10 seconds when offline). Files and folders created, edited, renamed, moved or deleted on the computer go to the server. If the server refuses (a read-only folder, say), the change is undone locally. Temporary files editors write while saving are never uploaded.
+- **Fast uploads.** Files over 1 MB go up in 1 MiB chunks over 32 WebSockets at once (the server's upload sockets), so a long-distance line stays full. Where sockets cannot be opened (a proxy without WebSocket support), they go as parallel HTTP chunks instead, and sockets are tried again after 10 minutes. Smaller files go in one request.
 - **Home and Activity.** The window shows transfers in progress with their speed, totals since the app started, recently synced items, problems, and the log.
 - **Updates.** The app checks the publisher's server every few hours and installs a new version with one click, after checking the publisher's signature and the file's SHA-256 (see [Updates](#updates)).
 - **Sign-in** with the browser (recommended) or a password. It stays signed in until you sign out or disconnect the device from the website.
 
 ## Installing
 
-Run `WebinCloud.exe` (or `RyzhellCloud.exe`). It installs itself, per user and without admin rights:
+Run `WebinCloudInstaller.exe` (or `RyzhellCloudInstaller.exe`). It reads the latest release from the publisher's server, checks its signature, downloads the exe, checks its SHA-256 and installs it, per user and without admin rights:
 
 | | Webin Cloud | Ryzhell Cloud |
 | --- | --- | --- |
 | Program | `%LOCALAPPDATA%\Programs\WebinCloud` | `%LOCALAPPDATA%\Programs\RyzhellCloud` |
 | Settings and log | `%LOCALAPPDATA%\WebinCloud` | `%LOCALAPPDATA%\RyzhellCloud` |
 | Files | `%USERPROFILE%\Webin Cloud` | `%USERPROFILE%\Ryzhell Cloud` |
-| Start menu | Webin Cloud | Ryzhell Cloud |
+| Desktop and Start menu | Webin Cloud | Ryzhell Cloud |
 
-It also adds an entry to **Settings → Apps**, which uninstalls it: that signs the computer out, removes the folder from File Explorer and the app's settings, and leaves the files you downloaded in place. Running a newer exe over an installed one replaces it.
+It keeps a copy of itself in the program folder and adds an entry to **Settings → Apps** and an **Uninstall** shortcut to the Start menu. Opened again with the app installed, it offers:
 
-To run a build without installing it, start it with `--portable`.
+- **Repair:** downloads the app again and puts it back, keeping the sign-in and settings.
+- **Uninstall:** closes the app, signs the computer out on the server, removes its folder from File Explorer (with its thumbnails and start-with-Windows entry), the shortcuts, the entry, the program and the app's settings. The files you downloaded stay in their folder.
+
+`--headless` installs or repairs with no window, and `--headless --uninstall` uninstalls; both write `%TEMP%\<Brand>Installer.log` and exit with 0 when done.
+
+`--open` starts the installed app and exits, with no window of its own; with nothing installed it shows the install window instead.
+
+The installer is `src/CloudClientInstaller`: one small .NET Framework 4.8 exe per brand (Windows 10 and 11 have it built in), sharing the brand, the update links and the signing key with the app. The app itself no longer installs anything: started from anywhere, it just runs.
 
 ## Building
 
@@ -54,6 +62,7 @@ The version you give sets the folder, the version stamped on both exes (and in `
 | `WebinCloudVersion.txt` | the version, e.g. `1.0.0` |
 | `WebinCloudSha.txt` | the exe's SHA-256 |
 | `WebinCloudSignature.txt` | the signature over the brand, version and SHA-256 |
+| `WebinCloudInstaller.exe` | the installer to give people |
 
 And the same names starting with `RyzhellCloud`. During development, builds go to `artifacts/<Brand>/`, one folder per brand.
 
@@ -142,19 +151,23 @@ The full protocol is in the server repository: [docs/desktop-api.md](https://git
 
 ```
 src/CloudClient/
-  App.cs            start-up, install/uninstall, single instance, tray, sign-in/out, updates
+  App.cs            start-up, single instance, tray, sign-in/out, updates
   Brand.cs          per-product name, id, colours and COM class
   Api/              server client: bearer tokens, renewal, errors, live events
   Auth/             browser and password sign-in, Credential Manager storage
-  Core/             settings, log, start with Windows, installer
+  Core/             settings, log, start with Windows
   Sync/             sync root, Cloud Files provider, local changes, thumbnails, activity
   Updates/          update address, public key, updater
   UI/               theme (Theme.cs + Theme.xaml), controls, dialogs, tray menu
   Views/            setup and main windows (Home, Activity, Settings)
   Assets/Fonts      Rajdhani (SIL OFL 1.1)
   Assets/Lucide     Lucide icons (ISC)
+src/CloudClientInstaller/
+  Setup.cs          check the signed release, download, install, register, uninstall
+  InstallerWindow.cs  the window: install, or repair and uninstall
+  Headless.cs       --headless (and --uninstall) for scripts
 branding/<Brand>/   icon.png, logo.png, app.ico
 scripts/build.bat   double-click to build: asks for the version, runs build.ps1
-scripts/build.ps1   publish both brands into dist/<version>/
+scripts/build.ps1   publish both brands and their installers into dist/<version>/
 scripts/new-signing-key.ps1   create the update signing key, once
 ```
