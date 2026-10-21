@@ -98,7 +98,7 @@ public static class ThumbnailServer
     /// <summary>The image and video types the server makes thumbnails of (see its mime.ts).</summary>
     private static readonly HashSet<string> Previewable = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".mp4", ".webm", ".ogv", ".mov",
+        ".png", ".jpg", ".jpeg", ".jfif", ".gif", ".webp", ".avif", ".bmp", ".ico", ".apng", ".mp4", ".webm", ".ogv", ".mov",
     };
 
     /// <summary>Called by Explorer through the provider: a bitmap no larger than <paramref name="size"/>, or null.</summary>
