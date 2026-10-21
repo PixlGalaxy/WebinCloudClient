@@ -29,7 +29,7 @@ namespace CloudClient.Sync;
 ///   first; if the server refuses, Windows cancels it here too.
 /// Temporary files that editors write while saving are never uploaded.
 /// </summary>
-public sealed class CloudProvider : IDisposable
+public sealed partial class CloudProvider : IDisposable
 {
     /// <summary>Data is handed to Windows in pieces this size (a multiple of 4 KB, as required).</summary>
     private const int ChunkSize = 4 * 1024 * 1024;
@@ -48,6 +48,7 @@ public sealed class CloudProvider : IDisposable
     private static readonly NTStatus StatusAccessDenied = unchecked((int)0xC0000022);
 
     private readonly ApiClient _api;
+    private readonly Uploader _uploader;
     private readonly string _root;
     /// <summary>The root as Windows reports paths in callbacks: without the drive letter.</summary>
     private readonly string _rootNoDrive;
@@ -69,6 +70,7 @@ public sealed class CloudProvider : IDisposable
     public CloudProvider(ApiClient api, string root)
     {
         _api = api;
+        _uploader = new Uploader(api);
         _root = Path.GetFullPath(root).TrimEnd('\\');
         _rootNoDrive = _root[Path.GetPathRoot(_root)!.TrimEnd('\\').Length..];
         _fetchPlaceholders = OnFetchPlaceholders;
@@ -129,8 +131,17 @@ public sealed class CloudProvider : IDisposable
         TransferPlaceholders(connection, transfer, entries, StatusSuccess);
     }
 
+    /// <summary>
+    /// The folder's entries on the server, less the partial files it writes
+    /// while an upload is in progress ("name.&lt;12 hex digits&gt;.part"), which
+    /// would otherwise show here for a moment and vanish.
+    /// </summary>
     private async Task<List<RemoteEntry>> ListAsync(string relative) =>
-        (await _api.GetJsonAsync<RemoteListing>($"files?path={Uri.EscapeDataString(relative)}")).Entries;
+        (await _api.GetJsonAsync<RemoteListing>($"files?path={Uri.EscapeDataString(relative)}")).Entries
+            .Where(entry => !UploadPartial().IsMatch(entry.Name)).ToList();
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"\.[0-9a-f]{12}\.part$")]
+    private static partial System.Text.RegularExpressions.Regex UploadPartial();
 
     private static void TransferPlaceholders(CF_CONNECTION_KEY connection, CF_TRANSFER_KEY transfer, List<RemoteEntry> entries, NTStatus status)
     {
@@ -605,9 +616,9 @@ public sealed class CloudProvider : IDisposable
             }
             else
             {
-                var size = await UploadAsync(fullPath, relative);
+                var (size, how) = await UploadAsync(fullPath, relative);
                 MarkSynced(fullPath, relative);
-                Log.Info($"Synced: uploaded \"{relative}\"");
+                Log.Info($"Synced: uploaded \"{relative}\" ({size:N0} bytes) {how}");
                 Activity.Record(ActivityKind.Uploaded, relative, size);
             }
             return true;
@@ -647,31 +658,18 @@ public sealed class CloudProvider : IDisposable
         }
     }
 
-    /// <summary>Uploads the file over whatever is on the server (the last change wins), keeping its modification time. Returns its size.</summary>
-    private async Task<long> UploadAsync(string fullPath, string relative)
+    /// <summary>Uploads the file over whatever is on the server (the last change wins), keeping its modification time. Returns its size and how it went.</summary>
+    private async Task<(long Size, string How)> UploadAsync(string fullPath, string relative)
     {
-        var modified = File.GetLastWriteTimeUtc(fullPath).ToString("O");
-        var url = $"files/upload?path={Uri.EscapeDataString(ParentOf(relative))}&onConflict=overwrite&modifiedAt={Uri.EscapeDataString(modified)}";
-        var opened = new List<FileStream>();
         var transfer = Activity.Begin(relative, Direction.Up, new FileInfo(fullPath).Length);
         try
         {
-            using var _ = await _api.SendAsync(() =>
-            {
-                // A fresh stream per attempt: a retried request cannot reuse a read one.
-                var stream = new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete, 1 << 16, useAsync: true);
-                opened.Add(stream);
-                var file = new StreamContent(new ProgressStream(stream, bytes => Activity.Progress(transfer, bytes)));
-                file.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                var form = new MultipartFormDataContent { { file, "file", NameOf(relative) } };
-                return new HttpRequestMessage(HttpMethod.Post, ServerAddress.Api(_api.ServerUrl, url)) { Content = form };
-            }, CancellationToken.None, stream: true);
-            return transfer.Total;
+            var how = await _uploader.UploadAsync(fullPath, ParentOf(relative), NameOf(relative), transfer.Total, bytes => Activity.Progress(transfer, bytes));
+            return (transfer.Total, how);
         }
         finally
         {
             Activity.End(transfer);
-            foreach (var stream in opened) await stream.DisposeAsync();
         }
     }
 
@@ -858,6 +856,7 @@ public sealed class CloudProvider : IDisposable
     {
         _local?.Dispose();
         _local = null;
+        _uploader.Dispose();
         foreach (var cancel in _transfers.Values) cancel.Cancel();
         if (_connected)
         {

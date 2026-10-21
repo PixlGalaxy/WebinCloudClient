@@ -64,4 +64,11 @@ public static class ServerAddress
     }
 
     public static Uri Api(string serverUrl, string relative) => new($"{serverUrl}/backend/api/{relative.TrimStart('/')}");
+
+    /// <summary>The same API address as ws:// or wss://, for WebSockets.</summary>
+    public static Uri Socket(string serverUrl, string relative)
+    {
+        var http = Api(serverUrl, relative);
+        return new UriBuilder(http) { Scheme = http.Scheme == Uri.UriSchemeHttps ? "wss" : "ws" }.Uri;
+    }
 }

@@ -39,6 +39,13 @@ public sealed class ServerConfig
     [JsonPropertyName("appTitle")] public string? AppTitle { get; set; }
 }
 
+/// <summary>Answer of POST /files/upload/sessions: chunk `index` is the bytes from index × ChunkSize.</summary>
+public sealed class UploadSession
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = "";
+    [JsonPropertyName("chunkSize")] public int ChunkSize { get; set; }
+}
+
 public sealed class ErrorBody
 {
     [JsonPropertyName("error")] public string? Error { get; set; }

@@ -102,6 +102,18 @@ public sealed class ApiClient : IDisposable
         return response;
     }
 
+    /// <summary>
+    /// The current access token, for connections that sign in once when they
+    /// open (upload sockets). Renewed first when it is about to expire, or when
+    /// it is `refused`, the token the server just turned down.
+    /// </summary>
+    public async Task<string> AccessTokenAsync(string? refused, CancellationToken cancel)
+    {
+        var current = _tokens.AccessToken;
+        if (current == refused || _tokens.AccessExpiresAt - DateTimeOffset.UtcNow < RenewMargin) await RenewAsync(current, cancel);
+        return _tokens.AccessToken;
+    }
+
     private Task<HttpResponseMessage> SendOnceAsync(HttpClient http, Func<HttpRequestMessage> build, CancellationToken cancel)
     {
         var request = build();
