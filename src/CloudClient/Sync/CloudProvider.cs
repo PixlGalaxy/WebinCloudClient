@@ -390,19 +390,21 @@ public sealed partial class CloudProvider : IDisposable
     /// <summary>Back to a cloud-only placeholder, then the request mark is cleared so opening it later just downloads it.</summary>
     private void FreeUp(string path)
     {
-        var attributes = File.GetAttributes(path);
-        if (!attributes.HasFlag(CloudOnly))
+        // A file only partly downloaded still counts as cloud-only, but holds data: it is emptied too.
+        if (!File.GetAttributes(path).HasFlag(CloudOnly) || HasData(path))
         {
-            CfOpenFileWithOplock(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE, out var protectedHandle).ThrowIfFailed();
-            using (protectedHandle)
-            {
-                CfDehydratePlaceholder(CfGetWin32HandleFromProtectedHandle(protectedHandle), 0, -1, CF_DEHYDRATE_FLAGS.CF_DEHYDRATE_FLAG_NONE, IntPtr.Zero)
-                    .ThrowIfFailed();
-            }
+            Dehydrate(path);
             Log.Info($"Freed up space: \"{path}\"");
             Activity.Record(ActivityKind.FreedUp, RelativeOf(path));
         }
         File.SetAttributes(path, File.GetAttributes(path) & ~Unpinned);
+    }
+
+    /// <summary>Whether any of the file's bytes take space on disk (a cloud-only placeholder takes none).</summary>
+    private static bool HasData(string path)
+    {
+        var low = Kernel32.GetCompressedFileSize(path, out uint high);
+        return low != uint.MaxValue && ((long)high << 32 | low) > 0;
     }
 
     private static bool Changed(FileInfo local, RemoteEntry remote) =>
@@ -730,6 +732,19 @@ public sealed partial class CloudProvider : IDisposable
 
     private void OnFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
+        // Called by Windows: an exception must not escape into it.
+        try
+        {
+            FetchData(info, parameters);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("Could not start a download", ex);
+        }
+    }
+
+    private void FetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
         var connection = info.ConnectionKey;
         var transfer = info.TransferKey;
         // Where the file is now (it may have been renamed here since); failing
@@ -741,6 +756,11 @@ public sealed partial class CloudProvider : IDisposable
         var offset = fetch.RequiredFileOffset;
         var length = fetch.RequiredLength;
         var fileSize = info.FileSize;
+        // The length arrives cut to its low 32 bits: asked for a whole 5 GiB file, it reads 1 GiB, and 0 for
+        // the 4 GiB left after that, so files of 4 GiB and up stalled. The drive hydrates whole files
+        // (HydrationPolicy.Full), so when the rest does not fit in 32 bits, or nothing is asked, the rest is sent.
+        var rest = fileSize - offset;
+        if (length <= 0 || rest > uint.MaxValue) length = rest;
 
         var who = info.ProcessInfo.IsNull ? null : info.ProcessInfo.Value?.ImagePath;
         if (offset == 0) Log.Info($"Downloading \"{relative}\" for {Path.GetFileName(who) ?? "an unknown program"}");
@@ -794,11 +814,49 @@ public sealed partial class CloudProvider : IDisposable
             if (!cancel.IsCancellationRequested) Log.Warn($"Could not download \"{relative}\": {ex.Message}");
             // Tell Windows the rest failed, so the app that opened the file gets an error instead of hanging.
             if (position < end) TransferData(connection, transfer, null, position, end - position, StatusUnsuccessful);
+            if (position > offset) _ = DiscardPartialAsync(relative);
         }
         finally
         {
             Activity.End(progress);
             if (_transfers.TryRemove(transfer, out var source)) source.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A download cut short (the program that opened the file closed it, or
+    /// the connection dropped) leaves part of the file here. With full
+    /// hydration Windows never asks for the rest, and the next open would wait
+    /// forever, so the file goes back to cloud-only and the next open
+    /// downloads it whole. Tried for a while: the program may still hold it.
+    /// </summary>
+    private async Task DiscardPartialAsync(string relative)
+    {
+        var path = LocalPath(relative);
+        for (var attempt = 1; attempt <= 12; attempt++)
+        {
+            await Task.Delay(TimeSpan.FromSeconds(attempt == 1 ? 1 : 5));
+            if (!File.Exists(path) || !File.GetAttributes(path).HasFlag(CloudOnly)) return;
+            try
+            {
+                Dehydrate(path);
+                Log.Info($"Discarded the unfinished download of \"{relative}\"; opening it downloads it again");
+                return;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or COMException)
+            {
+                if (attempt == 12) Log.Warn($"Could not discard the unfinished download of \"{relative}\": {ex.Message}");
+            }
+        }
+    }
+
+    private static void Dehydrate(string path)
+    {
+        CfOpenFileWithOplock(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE, out var protectedHandle).ThrowIfFailed();
+        using (protectedHandle)
+        {
+            CfDehydratePlaceholder(CfGetWin32HandleFromProtectedHandle(protectedHandle), 0, -1, CF_DEHYDRATE_FLAGS.CF_DEHYDRATE_FLAG_NONE, IntPtr.Zero)
+                .ThrowIfFailed();
         }
     }
 
