@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using CloudClient.Core;
+using Microsoft.Win32;
 using Windows.Security.Cryptography;
 using Windows.Storage;
 using Windows.Storage.Provider;
@@ -50,6 +51,33 @@ public static class SyncRoot
         StorageProviderSyncRootManager.Register(info);
         Log.Info($"Registered the sync folder {folder}");
     }
+
+    /// <summary>
+    /// Removes every cloud drive this brand registered for the Windows user
+    /// except `keep`: ones left behind when the account or folder changed
+    /// without signing out, each showing as another entry in File Explorer.
+    /// </summary>
+    public static void UnregisterAll(string? keep = null)
+    {
+        // Read from the registry: GetCurrentSyncRoots leaves out roots like these, registered by an unpackaged app.
+        string[] ids;
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(RegisteredRoots);
+            ids = key?.GetSubKeyNames() ?? [];
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Could not list the sync folders: {ex.Message}");
+            return;
+        }
+        var mine = $"{Brand.Id}!{WindowsIdentity.GetCurrent().User?.Value ?? "user"}!";
+        foreach (var id in ids)
+            if (id.StartsWith(mine, StringComparison.OrdinalIgnoreCase) && !string.Equals(id, keep, StringComparison.OrdinalIgnoreCase)) Unregister(id);
+    }
+
+    /// <summary>Where Windows keeps every registered sync root, one subkey per id.</summary>
+    private const string RegisteredRoots = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager";
 
     /// <summary>Removes the cloud drive. The folder itself and any downloaded files stay.</summary>
     public static void Unregister(string id)

@@ -42,6 +42,8 @@ public sealed class SyncEngine : IDisposable
         try
         {
             var id = SyncRoot.IdFor(_api.ServerUrl, _settings.Username ?? "");
+            // One app, one drive: anything else of this brand in File Explorer is left over.
+            SyncRoot.UnregisterAll(keep: id);
             await SyncRoot.RegisterAsync(id, _settings.SyncFolder, _api.ServerUrl);
             _settings.SyncRootId = id;
             _settings.Save();
