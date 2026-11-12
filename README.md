@@ -145,12 +145,12 @@ The full protocol is in the server repository: [docs/desktop-api.md](https://git
 ## Security
 
 - **Tokens** live in Windows Credential Manager, encrypted for the Windows user, never in `settings.json` or the log. The password is never stored.
-- **HTTPS is required** for any server reachable from the internet. Plain `http` is accepted only for local network addresses:
+- **HTTPS is expected** for any server reachable from the internet. Plain `http` is used without a word only for local network addresses:
   - `localhost`;
   - `10.x`, `172.16–31.x`, `192.168.x`, link-local and IPv6 ULA;
   - single-label, `.local`, `.lan` or `.home.arpa` names.
 
-  If an `http` address redirects to `https`, the app switches to the `https` one.
+  Any other `http` address works too, but only after a warning: the password (when signing in with it), the tokens and the files travel unencrypted, so anyone on the network can read them or take over the device's sign-in. The user chooses **Use it anyway** or cancels; the choice is remembered for that server, and Home and Settings then show **Not encrypted** next to the account. If an `http` address redirects to `https`, the app switches to the `https` one and no warning is needed.
 - **Redirects** are never followed on requests that carry the token.
 - **The sign-in listener** binds only to `127.0.0.1` on a random port. It reads at most 8 KB per connection, with a 10-second deadline, checks `state`, and stops as soon as the code arrives.
 - **Updates** are installed only with a valid publisher signature and a matching SHA-256 (see [Updates](#updates)).

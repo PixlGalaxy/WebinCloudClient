@@ -33,6 +33,8 @@ public sealed class AppSettings
     public bool StartWithWindows { get; set; } = true;
     /// <summary>The cloud drive registered with Windows for this account, so it can be removed on sign-out.</summary>
     public string? SyncRootId { get; set; }
+    /// <summary>A server without HTTPS outside the local network that the user chose to use anyway, so they are not asked again.</summary>
+    public string? AcceptedUnencryptedServer { get; set; }
 
     [JsonIgnore]
     public bool IsSignedIn => ServerUrl is not null && DeviceId is not null;

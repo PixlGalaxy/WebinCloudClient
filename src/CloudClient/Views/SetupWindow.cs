@@ -67,7 +67,14 @@ public sealed class SetupWindow : AppWindow
             }
             await RunAsync(new Control[] { address, continueButton }, status, "Looking for the server…", async cancel =>
             {
-                (_serverUrl, _serverName) = await SignIn.CheckServerAsync(normalized, cancel);
+                var (serverUrl, serverName) = await SignIn.CheckServerAsync(normalized, cancel);
+                if (!AcceptUnencrypted(serverUrl))
+                {
+                    // The user's choice, not a failure: said on the page, not logged as an error.
+                    Show(status, "Not connected: this server doesn't use HTTPS. Use its https:// address if it has one.", "Danger");
+                    return;
+                }
+                (_serverUrl, _serverName) = (serverUrl, serverName);
                 ShowSignIn();
             });
         }
@@ -177,6 +184,27 @@ public sealed class SetupWindow : AppWindow
     /// Runs one step with its inputs disabled and a progress sentence; errors
     /// end up in the sentence in words, not exception text.
     /// </summary>
+    /// <summary>
+    /// A server reached over plain http from outside the local network still
+    /// works, but nothing sent to it is encrypted: the user is told what that
+    /// exposes and decides. The choice is remembered for that server.
+    /// </summary>
+    private bool AcceptUnencrypted(string serverUrl)
+    {
+        if (!ServerAddress.IsUnencrypted(serverUrl) || _settings.AcceptedUnencryptedServer == serverUrl) return true;
+        var accepted = AppDialog.Confirm(this, "This connection isn't encrypted",
+            $"{serverUrl} doesn't use HTTPS. Anyone on the same network or along the way, such as public Wi-Fi, could see your password if you sign in with it, take over this computer's sign-in, and read the files that go up and down." +
+            "\n\nUse it only if you trust every network between you and the server. If it has an https:// address, use that instead.",
+            "Use it anyway", "triangle-alert", "Warning", destructive: true);
+        if (accepted)
+        {
+            _settings.AcceptedUnencryptedServer = serverUrl;
+            // The user's informed choice, shown on the account from now on: not a problem to list.
+            Log.Info($"Using {serverUrl} without HTTPS: the user accepted that nothing sent to it is encrypted");
+        }
+        return accepted;
+    }
+
     private async Task RunAsync(Control[] inputs, TextBlock status, string progress, Func<CancellationToken, Task> work, bool cancellable = false)
     {
         _busy?.Cancel();

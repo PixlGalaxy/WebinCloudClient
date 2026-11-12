@@ -20,7 +20,8 @@ public static class SignIn
     /// <summary>
     /// Checks the address answers like a Webin Cloud server and returns where
     /// it really is (an http address the server redirects to https becomes the
-    /// https one) and its name. Refuses plain http outside the local network.
+    /// https one) and its name. Plain http outside the local network is not
+    /// refused here: the setup window warns about it and lets the user decide.
     /// No credentials are sent here.
     /// </summary>
     public static async Task<(string ServerUrl, string Name)> CheckServerAsync(string serverUrl, CancellationToken cancel)
@@ -34,12 +35,6 @@ public static class SignIn
         var final = health.RequestMessage?.RequestUri?.GetLeftPart(UriPartial.Path) ?? "";
         const string suffix = "/backend/api/health";
         var resolved = final.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) ? final[..^suffix.Length] : serverUrl;
-        if (!ServerAddress.IsAllowed(resolved))
-        {
-            throw new ApiException(0,
-                "This server isn't using HTTPS, so your password and files would travel unencrypted. Use its https:// address.");
-        }
-
         try
         {
             var config = await http.GetFromJsonAsync<ServerConfig>(ServerAddress.Api(resolved, "config"), cancel);

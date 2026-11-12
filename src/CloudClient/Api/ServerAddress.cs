@@ -33,12 +33,12 @@ public static class ServerAddress
     }
 
     /// <summary>
-    /// Plain http sends the password and the tokens unencrypted, so it is only
-    /// accepted on the local network (loopback, private and link-local
-    /// addresses, single-label or .local/.lan/.home.arpa names). Anything
-    /// reachable from the internet must use https.
+    /// Plain http sends the password, the tokens and the files unencrypted.
+    /// On the local network (loopback, private and link-local addresses,
+    /// single-label or .local/.lan/.home.arpa names) that is fine; anywhere
+    /// else the user is warned and has to accept it (see IsUnencrypted).
     /// </summary>
-    public static bool IsAllowed(string serverUrl)
+    public static bool IsEncryptedOrLocal(string serverUrl)
     {
         var uri = new Uri(serverUrl);
         if (uri.Scheme == Uri.UriSchemeHttps) return true;
@@ -48,6 +48,9 @@ public static class ServerAddress
         if (host.EndsWith(".local") || host.EndsWith(".lan") || host.EndsWith(".home.arpa") || host.EndsWith(".localhost")) return true;
         return IPAddress.TryParse(host, out var ip) && IsLocal(ip);
     }
+
+    /// <summary>Plain http to a server outside the local network: anyone on the way can read what is sent.</summary>
+    public static bool IsUnencrypted(string serverUrl) => !IsEncryptedOrLocal(serverUrl);
 
     private static bool IsLocal(IPAddress ip)
     {

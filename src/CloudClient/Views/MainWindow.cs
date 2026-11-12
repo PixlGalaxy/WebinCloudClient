@@ -224,7 +224,7 @@ public sealed class MainWindow : AppWindow
             ? Badge("Connected", "Success", "SuccessChip")
             : Badge("Offline", "Warning", "WarningChip");
         var account = Ui.Card(Ui.Stack(
-            Ui.Row(Ui.PanelTitle("Account"), Spaced(status, 12)),
+            Ui.Row(Ui.PanelTitle("Account"), Spaced(status, 12), Spaced(EncryptionBadge(), 8)),
             Gap(Label("User"), 16),
             Gap(Ui.Text(name, "CardValue"), 2),
             Gap(Ui.Text(_user?.Email ?? "", "CardHint"), 2),
@@ -670,6 +670,9 @@ public sealed class MainWindow : AppWindow
         var account = Ui.Card(Ui.Stack(
             Ui.PanelTitle("Account"),
             Gap(Ui.Text($"Signed in as {_settings.Username} on {_api.ServerUrl}, as \"{_settings.DeviceName}\".", "Body"), 14),
+            Gap(ServerAddress.IsUnencrypted(_api.ServerUrl)
+                ? Ui.Sentence("This server doesn't use HTTPS: your sign-in and files travel unencrypted, so anyone on the network can read them.", "Warning")
+                : new FrameworkElement(), 8),
             Gap(Ui.Row(signOut, openWeb), 18)));
 
         var openLogs = Ui.Link("Open the log folder", (_, _) => Process.Start(new ProcessStartInfo(AppPaths.DataDir) { UseShellExecute = true }));
@@ -817,6 +820,15 @@ public sealed class MainWindow : AppWindow
     private static string When(DateTime at) => at.Date == DateTime.Today ? at.ToString("HH:mm:ss") : at.ToString("MMM d, HH:mm");
 
     private static TextBlock Label(string text) => Ui.Text(text.ToUpperInvariant(), "CardLabel");
+
+    /// <summary>"Not encrypted" next to the account when the server is reached over plain http outside the local network.</summary>
+    private FrameworkElement EncryptionBadge()
+    {
+        if (!ServerAddress.IsUnencrypted(_api.ServerUrl)) return new FrameworkElement();
+        var badge = Badge("Not encrypted", "Warning", "WarningChip");
+        badge.ToolTip = "This server doesn't use HTTPS: your sign-in and files travel unencrypted.";
+        return badge;
+    }
 
     /// <summary>Status badge: tinted background, bold uppercase text in the tone colour.</summary>
     private static Border Badge(string text, string toneKey, string chipKey)
