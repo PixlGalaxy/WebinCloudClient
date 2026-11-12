@@ -4,16 +4,16 @@
   into a folder named after the version.
 
 .DESCRIPTION
-  Writes dist/<version>/ with, for each brand:
-    <Brand>.exe            the app (installs itself when run)
-    <Brand>Version.txt     the version, e.g. 1.0.0
-    <Brand>Sha.txt         the exe's SHA-256
-    <Brand>Signature.txt   the signature over brand, version and SHA-256
-    <Brand>Installer.exe   the installer to give people (installs, repairs, uninstalls)
-  and URLs.txt, the link each file is uploaded to.
-  for example WebinCloud.exe, WebinCloudSha.txt, RyzhellCloud.exe, RyzhellCloudSha.txt.
-  To publish an update, upload a brand's files as they are to its folder on
-  the publisher's server (the links are in Updates/UpdateSource.cs).
+  Writes dist/<version>/ with a folder per brand, holding what goes in that
+  brand's folder on the publisher's server:
+    <Brand>/<Brand>.exe            the app
+    <Brand>/<Brand>Version.txt     the version, e.g. 1.0.0
+    <Brand>/<Brand>Sha.txt         the exe's SHA-256
+    <Brand>/<Brand>Signature.txt   the signature over brand, version and SHA-256
+  then Installers/<Brand>Installer.exe, the installer to give people (installs,
+  repairs, uninstalls), and URLs.txt, the link each file is uploaded to.
+  To publish an update, upload a brand's folder as it is to its folder on the
+  publisher's server (the links are in Updates/UpdateSource.cs).
   The app installs the exe only when the signature was made with the key from
   new-signing-key.ps1 and the exe it downloaded matches the SHA-256.
 
@@ -58,6 +58,8 @@ if ($Version -ne $current) {
 $out = Join-Path $root "dist\$Version"
 if ($Runtime -ne 'win-x64') { $out = Join-Path $out $Runtime }
 New-Item -ItemType Directory -Force $out | Out-Null
+$installers = Join-Path $out 'Installers'
+New-Item -ItemType Directory -Force $installers | Out-Null
 
 # The public key the apps carry; the signing key must be its pair, or every signature would be refused.
 $updateKey = Join-Path $root 'src\CloudClient\Updates\UpdateKey.cs'
@@ -99,12 +101,15 @@ foreach ($b in $brands) {
         -p:EnableCompressionInSingleFile=true -o $staging
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $b" }
 
-    $exe = Join-Path $out "$b.exe"
+    # Everything that goes in the brand's folder on the server, and nothing else.
+    $brandOut = Join-Path $out $b
+    New-Item -ItemType Directory -Force $brandOut | Out-Null
+    $exe = Join-Path $brandOut "$b.exe"
     Copy-Item (Join-Path $staging "$b.exe") $exe -Force
     $sha256 = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
     $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText((Join-Path $out "${b}Sha.txt"), "$sha256`n", $utf8)
-    [System.IO.File]::WriteAllText((Join-Path $out "${b}Version.txt"), "$Version`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $brandOut "${b}Sha.txt"), "$sha256`n", $utf8)
+    [System.IO.File]::WriteAllText((Join-Path $brandOut "${b}Version.txt"), "$Version`n", $utf8)
 
     if ($sign) {
         # Signed: brand, version and SHA-256, one per line. The app checks this
@@ -114,7 +119,7 @@ foreach ($b in $brands) {
         $ecdsa.HashAlgorithm = [System.Security.Cryptography.CngAlgorithm]::Sha256
         $message = [System.Text.Encoding]::UTF8.GetBytes("$b`n$Version`n$sha256")
         $signature = [Convert]::ToBase64String($ecdsa.SignData($message))
-        [System.IO.File]::WriteAllText((Join-Path $out "${b}Signature.txt"), "$signature`n", $utf8)
+        [System.IO.File]::WriteAllText((Join-Path $brandOut "${b}Signature.txt"), "$signature`n", $utf8)
     }
     Write-Host "$b $Version  sha256 $sha256"
 
@@ -122,7 +127,7 @@ foreach ($b in $brands) {
     $installerStaging = Join-Path $root "artifacts\$b\publish\installer"
     dotnet build $installerProject -c Release "-p:Brand=$b" -o $installerStaging
     if ($LASTEXITCODE -ne 0) { throw "Building the installer failed for $b" }
-    Copy-Item (Join-Path $installerStaging "${b}Installer.exe") (Join-Path $out "${b}Installer.exe") -Force
+    Copy-Item (Join-Path $installerStaging "${b}Installer.exe") (Join-Path $installers "${b}Installer.exe") -Force
 }
 
 # Where each file goes, read from the links the apps use (Updates/UpdateSource.cs).
@@ -136,7 +141,7 @@ foreach ($b in $brands) {
     $urls += "$b"
     foreach ($file in @("$b.exe", "${b}Version.txt", "${b}Sha.txt", "${b}Signature.txt", "${b}Installer.exe")) {
         if ($file -like '*Signature.txt' -and -not $sign) { continue }
-        $urls += "  $file"
+        $urls += "  $(if ($file -like '*Installer.exe') { "Installers\$file" } else { "$b\$file" })"
         $urls += "    $($folders[$b])$file/download?inline=1&path="
     }
     $urls += ""
@@ -144,4 +149,4 @@ foreach ($b in $brands) {
 [System.IO.File]::WriteAllLines((Join-Path $out 'URLs.txt'), [string[]]$urls, (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "Done: $out"
-Write-Host "To publish it, upload each brand's files to its folder: Apps/Dist/WebinCloudClient and Apps/Dist/RyzhellCloudClient."
+Write-Host "To publish it, upload each brand's folder to its folder on the server (Apps/Dist/WebinCloudClient, Apps/Dist/RyzhellCloudClient), and its installer from Installers."

@@ -54,7 +54,15 @@ dotnet build src/CloudClient -p:Brand=RyzhellCloud
 ./scripts/build.ps1 -Brand RyzhellCloud
 ```
 
-The version you give sets the folder, the version stamped on both exes (and in `CloudClient.csproj`) and what goes in the `Version.txt` files. For each brand, `dist/<version>/` gets:
+The version you give sets the folder, the version stamped on both exes (and in `CloudClient.csproj`) and what goes in the `Version.txt` files. `dist/<version>/` gets a folder per brand with exactly what goes in that brand's folder on the server, the installers apart, and `URLs.txt` with the upload link of each file:
+
+```
+dist/1.0.0/
+  WebinCloud/     WebinCloud.exe, WebinCloudVersion.txt, WebinCloudSha.txt, WebinCloudSignature.txt
+  RyzhellCloud/   RyzhellCloud.exe, RyzhellCloudVersion.txt, RyzhellCloudSha.txt, RyzhellCloudSignature.txt
+  Installers/     WebinCloudInstaller.exe, RyzhellCloudInstaller.exe
+  URLs.txt
+```
 
 | File | Content |
 | --- | --- |
@@ -75,7 +83,7 @@ https://webincloud.itzgalaxy.com/backend/api/public/durazznoapp/DurazznoApp/Apps
 https://webincloud.itzgalaxy.com/backend/api/public/durazznoapp/DurazznoApp/Apps/Dist/RyzhellCloudClient/
 ```
 
-To publish a version, upload the files of `dist/<version>/` to the brand's folder as they are:
+To publish a version, upload the files of `dist/<version>/<Brand>/` to the brand's folder as they are, and its installer from `dist/<version>/Installers/` next to them:
 
 | File | Content |
 | --- | --- |
