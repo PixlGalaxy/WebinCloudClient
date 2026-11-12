@@ -9,9 +9,8 @@ namespace CloudClient.UI;
 /// <summary>What the tray icon's badge says about syncing.</summary>
 public enum TrayState
 {
-    /// <summary>No badge: connecting, or not signed in.</summary>
+    /// <summary>No badge: everything is synced, or the app is connecting or signed out.</summary>
     None,
-    Synced,
     Uploading,
     Downloading,
     /// <summary>Going both ways at once.</summary>
@@ -26,7 +25,6 @@ public enum TrayState
 /// </summary>
 public static class TrayBadge
 {
-    private static readonly Color Green = ColorTranslator.FromHtml("#22C55E");
     private static readonly Color Blue = ColorTranslator.FromHtml("#3B82F6");
     private static readonly Color Purple = ColorTranslator.FromHtml("#A855F7");
     private static readonly Color Red = ColorTranslator.FromHtml("#EF4444");
@@ -35,6 +33,31 @@ public static class TrayBadge
     public const int Frames = 12;
 
     public static bool IsAnimated(TrayState state) => state is TrayState.Uploading or TrayState.Downloading or TrayState.Syncing;
+
+    /// <summary>
+    /// The logo for the tray, from the largest image in the brand's .ico with
+    /// its transparent margins cut away, so it fills the 16 px square Windows
+    /// gives the icon instead of sitting small inside it.
+    /// </summary>
+    public static Bitmap Logo(Stream ico)
+    {
+        using var icon = new Icon(ico, 256, 256);
+        using var full = icon.ToBitmap();
+        var (left, top, right, bottom) = (full.Width, full.Height, -1, -1);
+        for (var y = 0; y < full.Height; y++)
+        {
+            for (var x = 0; x < full.Width; x++)
+            {
+                if (full.GetPixel(x, y).A < 24) continue;
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+        if (right < left) return new Bitmap(full);
+        return full.Clone(Rectangle.FromLTRB(left, top, right + 1, bottom + 1), PixelFormat.Format32bppArgb);
+    }
 
     public static Icon Draw(Bitmap logo, TrayState state, int frame)
     {
@@ -45,7 +68,11 @@ public static class TrayBadge
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.InterpolationMode = InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            g.DrawImage(logo, new Rectangle(0, 0, size, size));
+            // As large as the square allows, keeping its shape, centred.
+            var scale = Math.Min((float)size / logo.Width, (float)size / logo.Height);
+            var w = logo.Width * scale;
+            var h = logo.Height * scale;
+            g.DrawImage(logo, (size - w) / 2, (size - h) / 2, w, h);
             if (state != TrayState.None) DrawBadge(g, size, state, frame % Frames);
         }
         return ToIcon(canvas);
@@ -59,7 +86,6 @@ public static class TrayBadge
         var inner = RectangleF.Inflate(outer, -1, -1);
         var color = state switch
         {
-            TrayState.Synced => Green,
             TrayState.Uploading => Purple,
             TrayState.Downloading => Blue,
             // Both ways: the two colours take turns, once per round of the arrows.
@@ -79,9 +105,6 @@ public static class TrayBadge
 
         switch (state)
         {
-            case TrayState.Synced:
-                g.DrawLines(pen, [new PointF(cx - r * 0.45f, cy + r * 0.02f), new PointF(cx - r * 0.12f, cy + r * 0.35f), new PointF(cx + r * 0.45f, cy - r * 0.32f)]);
-                break;
             case TrayState.Uploading:
             case TrayState.Downloading:
             {

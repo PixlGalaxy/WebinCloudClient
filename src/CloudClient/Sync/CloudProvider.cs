@@ -64,6 +64,12 @@ public sealed partial class CloudProvider : IDisposable
     private readonly CF_CALLBACK _notifyDelete;
     private readonly CF_CALLBACK _notifyRename;
     private LocalChanges? _local;
+
+    /// <summary>Changes made here and not on the server yet.</summary>
+    public int PendingChanges => _local?.Pending ?? 0;
+
+    /// <summary>Changes that failed and wait for another try.</summary>
+    public int FailingChanges => _local?.Failing ?? 0;
     private CF_CONNECTION_KEY _connection;
     private bool _connected;
 

@@ -33,9 +33,19 @@ public sealed class SyncEngine : IDisposable
         events.FolderChanged += folder => _ = _provider?.ReconcileAsync(folder);
         events.ConnectionChanged += connected =>
         {
+            Online = connected;
             if (connected) _ = _provider?.ReconcileAllAsync();
         };
     }
+
+    /// <summary>Whether the live connection to the server is up; null until it first answers.</summary>
+    public bool? Online { get; private set; }
+
+    /// <summary>Changes made here and not on the server yet.</summary>
+    public int PendingChanges => _provider?.PendingChanges ?? 0;
+
+    /// <summary>Changes that failed and wait for another try.</summary>
+    public int FailingChanges => _provider?.FailingChanges ?? 0;
 
     public async Task StartAsync()
     {
@@ -61,6 +71,17 @@ public sealed class SyncEngine : IDisposable
             Problem = "The folder could not be set up in File Explorer. Details are in the log.";
         }
         StateChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// Sync now: every folder is compared with the server at once, as when the
+    /// app connects, so anything a missed notice left behind shows up.
+    /// </summary>
+    public async Task SyncNowAsync()
+    {
+        if (_provider is not { } provider) return;
+        Log.Info("Sync now: comparing every folder with the server");
+        await provider.ReconcileAllAsync();
     }
 
     /// <summary>Stops answering Windows; the drive stays registered, as when the app quits.</summary>

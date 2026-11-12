@@ -193,7 +193,8 @@ public sealed class App : Application
 
     /// <summary>
     /// Red when the drive could not start or the server is out of reach;
-    /// purple going up, blue coming down, green when everything is synced.
+    /// purple going up, blue coming down. Nothing when everything is synced:
+    /// the badge only shows when there is something to see.
     /// </summary>
     private TrayState TrayStateNow()
     {
@@ -202,7 +203,7 @@ public sealed class App : Application
         var transfers = Activity.Transfers();
         var up = transfers.Any(t => t.Direction == Direction.Up);
         var down = transfers.Any(t => t.Direction == Direction.Down);
-        return up && down ? TrayState.Syncing : up ? TrayState.Uploading : down ? TrayState.Downloading : TrayState.Synced;
+        return up && down ? TrayState.Syncing : up ? TrayState.Uploading : down ? TrayState.Downloading : TrayState.None;
     }
 
     private void ShowWindow()

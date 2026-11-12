@@ -44,12 +44,17 @@ public sealed class MainWindow : AppWindow
     private string _activityTab = "recent";
 
     // Parts of the current page the ticker refreshes in place; null when that page is not shown.
-    private TextBlock? _upSpeed, _downSpeed, _upTotal, _downTotal;
+    private TextBlock? _upSpeed, _downSpeed, _upTotal, _downTotal, _upFiles, _downFiles;
     private StackPanel? _transfersBox, _recentBox, _problemsBox, _activityList;
     private ContentControl? _updateBox;
     private int _seenActivity = -1;
     private int _seenProblems = -1;
     private bool _hadTransfers = true;
+    /// <summary>Sync now is running; kept here so a Home redrawn meanwhile still shows it.</summary>
+    private bool _syncingNow;
+    /// <summary>The Files card's state badge, redrawn by the ticker when the state changes.</summary>
+    private ContentControl? _filesBadge;
+    private string? _filesState;
 
     public bool ExitRequested { get; set; }
 
@@ -198,7 +203,9 @@ public sealed class MainWindow : AppWindow
 
     private void ResetLiveParts()
     {
-        _upSpeed = _downSpeed = _upTotal = _downTotal = null;
+        _upSpeed = _downSpeed = _upTotal = _downTotal = _upFiles = _downFiles = null;
+        _filesBadge = null;
+        _filesState = null;
         _transfersBox = _recentBox = _problemsBox = _activityList = null;
         _updateBox = null;
         _seenActivity = _seenProblems = -1;
@@ -227,33 +234,38 @@ public sealed class MainWindow : AppWindow
             Gap(Ui.Text(_settings.DeviceName, "Body"), 4)));
 
         var ready = _sync.IsRunning;
-        var (tone, chip, state) = _sync.Problem is not null
-            ? ("Warning", "WarningChip", "Not available")
-            : ready ? ("Success", "SuccessChip", "Synced") : ("Accent", "AccentChip", "Starting…");
         var openFolder = Ui.Button("Open folder", "folder-open", "SecondaryButton", (_, _) =>
             Process.Start(new ProcessStartInfo(_settings.SyncFolder) { UseShellExecute = true }));
         openFolder.HorizontalAlignment = HorizontalAlignment.Left;
         openFolder.IsEnabled = ready;
         var files = Ui.Stack(
-            Ui.Row(Ui.PanelTitle("Files"), Spaced(Badge(state, tone, chip), 12)),
+            Ui.Row(Ui.PanelTitle("Files"), Spaced(_filesBadge = new ContentControl { Focusable = false }, 12)),
             Gap(Label("Folder"), 16),
             Gap(Ui.Text(_settings.SyncFolder, "Mono"), 4));
         if (_sync.Problem is not null) files.Children.Add(Gap(Ui.Sentence(_sync.Problem, "Warning"), 14));
-        files.Children.Add(Gap(openFolder, 18));
+        var syncNow = Ui.Button(_syncingNow ? "Syncing…" : "Sync now", "folder-sync", "SecondaryButton");
+        syncNow.IsEnabled = ready && !_syncingNow;
+        syncNow.Margin = new Thickness(10, 0, 0, 0);
+        syncNow.Click += async (_, _) => await SyncNowAsync();
+        files.Children.Add(Gap(Ui.Row(openFolder, syncNow), 18));
         var sync = Ui.Card(files);
 
         _updateBox = new ContentControl();
+        // FillUpdate draws Home's banner or Settings' rows by the page shown, which is set further down: say it now.
+        _page.Tag = "home";
         FillUpdate();
 
         _upSpeed = Ui.Text("", "CardValue");
         _downSpeed = Ui.Text("", "CardValue");
         _upTotal = Ui.Text("", "CardValue");
         _downTotal = Ui.Text("", "CardValue");
+        _upFiles = Ui.Text("", "CardHint");
+        _downFiles = Ui.Text("", "CardHint");
         var stats = new UniformGrid { Columns = 4, Rows = 1 };
         stats.Children.Add(Stat("arrow-up", "Accent", "Uploading", _upSpeed));
         stats.Children.Add(Stat("arrow-down", "Success", "Downloading", _downSpeed));
-        stats.Children.Add(Stat("upload", "Accent", "Uploaded", _upTotal));
-        stats.Children.Add(Stat("download", "Success", "Downloaded", _downTotal));
+        stats.Children.Add(Stat("upload", "Accent", "Uploaded", _upTotal, _upFiles));
+        stats.Children.Add(Stat("download", "Success", "Downloaded", _downTotal, _downFiles));
         _transfersBox = new StackPanel();
         var transfers = Ui.Card(Ui.Stack(
             Ui.PanelTitle("Transfers"),
@@ -275,10 +287,74 @@ public sealed class MainWindow : AppWindow
         Tick();
     }
 
-    private static UIElement Stat(string icon, string tone, string label, TextBlock value)
+    /// <summary>
+    /// Icon, label and value, with an optional smaller line under the value.
+    /// Kept inside its column: a long value is cut with "…" instead of running
+    /// under the next one.
+    /// </summary>
+    /// <summary>
+    /// What the Files card says about syncing, re-read every second: syncing
+    /// while Sync now runs or anything goes up, comes down or waits to go up;
+    /// unsynced when offline or a change keeps failing; synced otherwise.
+    /// </summary>
+    private void FillFilesBadge()
     {
+        if (_filesBadge is null) return;
+        var transfers = Activity.Transfers().Count > 0;
+        var (state, tone, chip, tip) =
+            _sync.Problem is not null ? ("Not available", "Warning", "WarningChip", _sync.Problem)
+            : !_sync.IsRunning ? ("Starting…", "Accent", "AccentChip", "The folder is being set up in File Explorer.")
+            : _sync.Online == false ? ("Unsynced", "Warning", "WarningChip", "Can't reach the server. Changes sync once it is back.")
+            : _syncingNow || transfers || _sync.PendingChanges > _sync.FailingChanges
+                ? ("Syncing", "Accent", "AccentChip", "Files are going up or coming down.")
+            : _sync.FailingChanges > 0
+                ? ("Unsynced", "Warning", "WarningChip", $"{_sync.FailingChanges} {(_sync.FailingChanges == 1 ? "change waits" : "changes wait")} for another try. See Problems.")
+            : ("Synced", "Success", "SuccessChip", "Everything here matches the server.");
+        if (state == _filesState) return;
+        _filesState = state;
+        var badge = Badge(state, tone, chip);
+        badge.ToolTip = tip;
+        _filesBadge.Content = badge;
+    }
+
+    /// <summary>Runs Sync now, showing it for at least a second so the press is seen to do something.</summary>
+    private async Task SyncNowAsync()
+    {
+        if (_syncingNow) return;
+        _syncingNow = true;
+        if (_page.Tag as string == "home") ShowHome();
+        try
+        {
+            await Task.WhenAll(_sync.SyncNowAsync(), Task.Delay(TimeSpan.FromSeconds(1)));
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Sync now failed: {ex.Message}");
+        }
+        finally
+        {
+            _syncingNow = false;
+            if (_page.Tag as string == "home") ShowHome();
+        }
+    }
+
+    private static UIElement Stat(string icon, string tone, string label, TextBlock value, TextBlock? detail = null)
+    {
+        value.TextTrimming = TextTrimming.CharacterEllipsis;
         var text = Ui.Stack(Ui.Text(label.ToUpperInvariant(), "CardLabel"), Gap(value, 2));
-        return Ui.Row(Ui.IconChip(icon, tone, $"{tone}Chip", 36, 18), Spaced(text, 12));
+        if (detail is not null) text.Children.Add(detail);
+        text.Margin = new Thickness(12, 0, 8, 0);
+        text.VerticalAlignment = VerticalAlignment.Center;
+
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var chip = Ui.IconChip(icon, tone, $"{tone}Chip", 36, 18);
+        chip.VerticalAlignment = VerticalAlignment.Center;
+        grid.Children.Add(chip);
+        Grid.SetColumn(text, 1);
+        grid.Children.Add(text);
+        return grid;
     }
 
     /// <summary>The update banner on Home, or the update card's body in Settings.</summary>
@@ -344,7 +420,9 @@ public sealed class MainWindow : AppWindow
     private string LatestText()
     {
         if (_updater.Ready is { } ready) return $"{ready.Version}  (downloaded, installs on next start)";
-        if (_updater.Latest is not { } latest) return _updater.IsBusy ? "Checking…" : "Not checked yet";
+        // The result shows once the whole check is over, not halfway through it.
+        if (_updater.IsBusy) return "Checking…";
+        if (_updater.Latest is not { } latest) return "Not checked yet";
         return latest > Updater.Current ? $"{latest}  (update available)" : $"{latest}  (up to date)";
     }
 
@@ -352,7 +430,7 @@ public sealed class MainWindow : AppWindow
     private UIElement ServerStatus()
     {
         var checkedAt = _updater.LastChecked is { } at ? $"  ·  checked {at:HH:mm}" : "";
-        var (text, brush) = _updater.IsBusy ? ("Connecting…", "Warning")
+        var (text, brush) = _updater.IsBusy ? ("Checking…", "Warning")
             : _updater.Reachable switch
             {
                 true => ($"Online (Webin Cloud Server){checkedAt}", "Success"),
@@ -451,12 +529,15 @@ public sealed class MainWindow : AppWindow
 
     private void Tick()
     {
+        FillFilesBadge();
         if (_upSpeed is not null)
         {
             _upSpeed.Text = Speed(Activity.Speed(Direction.Up));
             _downSpeed!.Text = Speed(Activity.Speed(Direction.Down));
-            _upTotal!.Text = Totals(Activity.FilesUploaded, Activity.BytesUploaded);
-            _downTotal!.Text = Totals(Activity.FilesDownloaded, Activity.BytesDownloaded);
+            _upTotal!.Text = Size(Activity.BytesUploaded);
+            _downTotal!.Text = Size(Activity.BytesDownloaded);
+            _upFiles!.Text = Files(Activity.FilesUploaded);
+            _downFiles!.Text = Files(Activity.FilesDownloaded);
         }
         if (_transfersBox is not null) FillTransfers(_transfersBox);
 
@@ -718,7 +799,18 @@ public sealed class MainWindow : AppWindow
     }
 
     /// <summary>Since the app started, e.g. "60 MB · 1 file".</summary>
-    private static string Totals(int files, long bytes) => $"{Size(bytes)} · {files} {(files == 1 ? "file" : "files")}";
+    /// <summary>"300 files", "1 K files", "2.7 K files", "1.2 M files": rounded down, so it never says more than there are.</summary>
+    private static string Files(int files)
+    {
+        static string Short(int n, double unit, string suffix) => $"{Math.Floor(n / unit * 10) / 10:0.#} {suffix}";
+        var count = files switch
+        {
+            >= 1_000_000 => Short(files, 1_000_000, "M"),
+            >= 1_000 => Short(files, 1_000, "K"),
+            _ => files.ToString(),
+        };
+        return $"{count} {(files == 1 ? "file" : "files")}";
+    }
 
     private static string Speed(double bytesPerSecond) => bytesPerSecond < 1 ? "—" : $"{Size((long)bytesPerSecond)}/s";
 

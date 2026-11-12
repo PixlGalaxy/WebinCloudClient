@@ -28,7 +28,7 @@ public sealed class TrayIcon : IDisposable
     {
         _items = items;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Brand/app.ico")).Stream;
-        using (var logo = new System.Drawing.Icon(stream, Forms.SystemInformation.SmallIconSize)) _logo = logo.ToBitmap();
+        _logo = TrayBadge.Logo(stream);
         _icon = new Forms.NotifyIcon
         {
             Icon = TrayBadge.Draw(_logo, TrayState.None, 0),

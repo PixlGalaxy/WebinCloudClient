@@ -20,6 +20,8 @@ public sealed class LocalChanges : IDisposable
 
     private readonly FileSystemWatcher _watcher;
     private readonly ConcurrentDictionary<string, DateTime> _due = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Paths that could not be synced yet and wait for another try.</summary>
+    private readonly ConcurrentDictionary<string, byte> _failing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, Task<bool>> _process;
     private readonly Timer _timer;
     private int _running;
@@ -46,6 +48,12 @@ public sealed class LocalChanges : IDisposable
     /// <summary>Queues a path to be looked at once it has been quiet.</summary>
     public void Touch(string path) => _due[path] = DateTime.UtcNow + Quiet;
 
+    /// <summary>Changes made here and not on the server yet, including the ones waiting for another try.</summary>
+    public int Pending => _due.Count;
+
+    /// <summary>Changes that failed and wait for another try (the server refused or could not be reached).</summary>
+    public int Failing => _failing.Count;
+
     private void Later(string path, TimeSpan delay) => _due.TryAdd(path, DateTime.UtcNow + delay);
 
     private async Task DrainAsync()
@@ -71,7 +79,12 @@ public sealed class LocalChanges : IDisposable
                     Log.Warn($"Could not sync \"{path}\": {ex.Message}");
                     done = false;
                 }
-                if (!done) Later(path, Retry);
+                if (done) _failing.TryRemove(path, out _);
+                else
+                {
+                    _failing[path] = 0;
+                    Later(path, Retry);
+                }
             }
         }
         finally

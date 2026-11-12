@@ -45,6 +45,9 @@ public sealed class Updater
     public static bool Supported => true;
 #endif
 
+    /// <summary>A check shows as running at least this long, so pressing Check for updates is seen to do something.</summary>
+    private static readonly TimeSpan ShortestCheck = TimeSpan.FromSeconds(1);
+
     private int _busy;
     private string? _lastProblem;
 
@@ -74,6 +77,7 @@ public sealed class Updater
     public async Task CheckAsync()
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
+        var started = DateTime.UtcNow;
         Set("Checking for updates…");
         try
         {
@@ -112,6 +116,8 @@ public sealed class Updater
         }
         finally
         {
+            var left = ShortestCheck - (DateTime.UtcNow - started);
+            if (left > TimeSpan.Zero) await Task.Delay(left);
             Interlocked.Exchange(ref _busy, 0);
             Changed?.Invoke();
         }
