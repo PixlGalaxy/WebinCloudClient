@@ -17,11 +17,13 @@ public sealed class LocalChanges : IDisposable
     private static readonly TimeSpan Quiet = TimeSpan.FromSeconds(2);
     /// <summary>A file another program still holds open is tried again after this.</summary>
     public static readonly TimeSpan Retry = TimeSpan.FromSeconds(5);
+    /// <summary>A change that keeps failing waits longer each time, up to this.</summary>
+    private static readonly TimeSpan LongestRetry = TimeSpan.FromMinutes(5);
 
     private readonly FileSystemWatcher _watcher;
     private readonly ConcurrentDictionary<string, DateTime> _due = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>Paths that could not be synced yet and wait for another try.</summary>
-    private readonly ConcurrentDictionary<string, byte> _failing = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Paths that could not be synced yet and wait for another try: how many tries failed, and the last error logged.</summary>
+    private readonly ConcurrentDictionary<string, (int Tries, string? Logged)> _failing = new(StringComparer.OrdinalIgnoreCase);
     private readonly Func<string, Task<bool>> _process;
     private readonly Timer _timer;
     private int _running;
@@ -56,6 +58,10 @@ public sealed class LocalChanges : IDisposable
 
     private void Later(string path, TimeSpan delay) => _due.TryAdd(path, DateTime.UtcNow + delay);
 
+    /// <summary>5 s, 10 s, 20 s... up to 5 minutes: a change that cannot go through must not retry every few seconds for days.</summary>
+    private static TimeSpan Backoff(int tries) =>
+        TimeSpan.FromSeconds(Math.Min(LongestRetry.TotalSeconds, Retry.TotalSeconds * Math.Pow(2, Math.Min(tries - 1, 10))));
+
     private async Task DrainAsync()
     {
         if (Interlocked.Exchange(ref _running, 1) == 1) return;
@@ -70,21 +76,31 @@ public sealed class LocalChanges : IDisposable
                 if (!_due.TryGetValue(path, out var due) || due > DateTime.UtcNow) continue;
                 _due.TryRemove(path, out _);
                 bool done;
+                string? error = null;
                 try
                 {
                     done = await _process(path);
                 }
                 catch (Exception ex)
                 {
-                    Log.Warn($"Could not sync \"{path}\": {ex.Message}");
+                    error = ex.Message;
                     done = false;
                 }
-                if (done) _failing.TryRemove(path, out _);
-                else
+                if (done)
                 {
-                    _failing[path] = 0;
-                    Later(path, Retry);
+                    if (_failing.TryRemove(path, out var past) && past.Logged is not null) Log.Info($"Synced after {past.Tries} failed tries: \"{path}\"");
+                    continue;
                 }
+                var (tries, logged) = _failing.TryGetValue(path, out var before) ? before : (0, null);
+                tries++;
+                // Logged once per error, not on every try: the same failure for days filled the log.
+                if (error is not null && error != logged)
+                {
+                    Log.Warn($"Could not sync \"{path}\": {error} (tried again later, waiting longer each time)");
+                    logged = error;
+                }
+                _failing[path] = (tries, logged);
+                Later(path, Backoff(tries));
             }
         }
         finally

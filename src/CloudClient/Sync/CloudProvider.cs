@@ -57,6 +57,8 @@ public sealed partial class CloudProvider : IDisposable
     private readonly ConcurrentDictionary<string, byte> _removing = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>One comparison at a time, so two notices for the same folder never race.</summary>
     private readonly SemaphoreSlim _reconcileGate = new(1, 1);
+    /// <summary>Server names that clash with another by case only, already logged once.</summary>
+    private readonly ConcurrentDictionary<string, byte> _caseClashes = new(StringComparer.Ordinal);
     // Kept as fields so the GC never collects delegates Windows still calls.
     private readonly CF_CALLBACK _fetchPlaceholders;
     private readonly CF_CALLBACK _fetchData;
@@ -241,7 +243,15 @@ public sealed partial class CloudProvider : IDisposable
                 return;
             }
 
-            var remoteByName = remote.ToDictionary(e => e.Name, StringComparer.OrdinalIgnoreCase);
+            // Windows names ignore case, so "Ian" and "ian" on the server cannot both be here: the first is kept.
+            // Before, two such names stopped the whole folder from ever being refreshed.
+            var remoteByName = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in remote)
+            {
+                if (remoteByName.TryAdd(entry.Name, entry)) continue;
+                if (_caseClashes.TryAdd(Join(relative, entry.Name), 0))
+                    Log.Warn($"\"{Join(relative, entry.Name)}\" differs only in upper/lower case from \"{Join(relative, remoteByName[entry.Name].Name)}\" on the server; Windows can hold only one, so it is left out here. Rename one of them on the website.");
+            }
             var localEntries = new DirectoryInfo(local).GetFileSystemInfos();
             var toCreate = new List<RemoteEntry>();
             var pinnedAgain = new List<string>();
@@ -690,6 +700,23 @@ public sealed partial class CloudProvider : IDisposable
 
     /// <summary>Turns a local item into a synced placeholder (or marks an edited one synced again).</summary>
     private static void MarkSynced(string fullPath, string relative)
+    {
+        // Marking needs write access, which a read-only file refuses ("Access is denied"): the file was then
+        // uploaded again and again, never marked. The attribute is lifted for the moment it takes, then put back.
+        var attributes = File.GetAttributes(fullPath);
+        var readOnly = attributes.HasFlag(FileAttributes.ReadOnly);
+        if (readOnly) File.SetAttributes(fullPath, attributes & ~FileAttributes.ReadOnly);
+        try
+        {
+            MarkSyncedWritable(fullPath, relative);
+        }
+        finally
+        {
+            if (readOnly) File.SetAttributes(fullPath, File.GetAttributes(fullPath) | FileAttributes.ReadOnly);
+        }
+    }
+
+    private static void MarkSyncedWritable(string fullPath, string relative)
     {
         CfOpenFileWithOplock(fullPath, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS, out var protectedHandle).ThrowIfFailed();
         using (protectedHandle)
