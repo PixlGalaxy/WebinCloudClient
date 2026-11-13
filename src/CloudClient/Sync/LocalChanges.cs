@@ -48,12 +48,18 @@ public sealed class LocalChanges : IDisposable
     }
 
     /// <summary>Queues a path to be looked at once it has been quiet.</summary>
-    public void Touch(string path) => _due[path] = DateTime.UtcNow + Quiet;
+    public void Touch(string path)
+    {
+        _due[path] = DateTime.UtcNow + Quiet;
+        // A new change starts afresh: it is not held back by how often the previous one failed.
+        if (_failing.TryGetValue(path, out var failing)) _failing[path] = (0, failing.Logged);
+    }
 
-    /// <summary>Sync now: every change waiting, failed ones included, is tried at the next pass.</summary>
+    /// <summary>Sync now: changes waiting for another try go at the next pass. Ones still being written keep their quiet time.</summary>
     public void RetryNow()
     {
-        foreach (var path in _due.Keys) _due[path] = DateTime.UtcNow;
+        foreach (var path in _failing.Keys)
+            if (_due.TryGetValue(path, out var due)) _due.TryUpdate(path, DateTime.UtcNow, due);
     }
 
     /// <summary>Changes made here and not on the server yet, including the ones waiting for another try.</summary>
@@ -64,9 +70,17 @@ public sealed class LocalChanges : IDisposable
 
     private void Later(string path, TimeSpan delay) => _due.TryAdd(path, DateTime.UtcNow + delay);
 
-    /// <summary>5 s, 10 s, 20 s... up to 5 minutes: a change that cannot go through must not retry every few seconds for days.</summary>
-    private static TimeSpan Backoff(int tries) =>
-        TimeSpan.FromSeconds(Math.Min(LongestRetry.TotalSeconds, Retry.TotalSeconds * Math.Pow(2, Math.Min(tries - 1, 10))));
+    /// <summary>
+    /// Every 5 s for the first minute (a file another program has open is
+    /// usually let go soon), then 10 s, 20 s... up to 5 minutes: a change
+    /// that cannot go through must not retry every few seconds for days.
+    /// </summary>
+    private static TimeSpan Backoff(int tries)
+    {
+        const int Patient = 12;
+        if (tries <= Patient) return Retry;
+        return TimeSpan.FromSeconds(Math.Min(LongestRetry.TotalSeconds, Retry.TotalSeconds * Math.Pow(2, Math.Min(tries - Patient, 10))));
+    }
 
     private async Task DrainAsync()
     {

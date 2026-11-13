@@ -155,24 +155,58 @@ public sealed partial class CloudProvider : IDisposable
     {
         if (relative != "")
         {
-            if (_nestedGrants is null) await ListAsync("");
+            if (_grants is null) await FirstRootListing();
             if (GrantPathChildren(relative) is { } children) return children;
         }
 
         var entries = (await _api.GetJsonAsync<RemoteListing>($"files?path={Uri.EscapeDataString(relative)}")).Entries
             .Where(entry => !UploadPartial().IsMatch(entry.Name)).ToList();
-        if (relative != "") return entries;
+        if (relative != "") return WithoutCaseClashes(relative, entries);
 
         var nested = entries.Where(e => e.Name.Contains('/')).ToList();
-        _nestedGrants = nested;
+        // Only a user who is not an admin gets names with "/": then every root entry is a grant.
+        _grants = nested.Count > 0 ? entries : [];
         var root = entries.Where(e => !e.Name.Contains('/')).ToList();
         foreach (var top in nested.Select(e => e.Path.Split('/')[0]).Distinct(StringComparer.OrdinalIgnoreCase))
             if (!root.Any(e => e.Name.Equals(top, StringComparison.OrdinalIgnoreCase))) root.Add(PathFolder(top, nested));
-        return root;
+        return WithoutCaseClashes(relative, root);
     }
 
-    /// <summary>Grants below the top level, as the root listing gave them; null until the root is first listed.</summary>
-    private volatile List<RemoteEntry>? _nestedGrants;
+    /// <summary>
+    /// The folders granted to a user who is not an admin, when some lie below
+    /// the top level; empty otherwise; null until the root is first listed.
+    /// </summary>
+    private volatile List<RemoteEntry>? _grants;
+    private readonly object _firstRootGate = new();
+    private Task? _firstRootListing;
+
+    /// <summary>One root listing however many folders ask for their contents before it is done; tried again if it failed.</summary>
+    private Task FirstRootListing()
+    {
+        lock (_firstRootGate)
+        {
+            if (_firstRootListing is not { IsFaulted: false, IsCanceled: false }) _firstRootListing = ListAsync("");
+            return _firstRootListing;
+        }
+    }
+
+    /// <summary>
+    /// Windows names ignore case, so "Ian" and "ian" on the server cannot both
+    /// be here. One is kept, the same one every time (the first in ordinal
+    /// order), so the server's listing order never makes the file flip between
+    /// the two. Before, two such names stopped the whole folder from listing.
+    /// </summary>
+    private List<RemoteEntry> WithoutCaseClashes(string relative, List<RemoteEntry> entries)
+    {
+        var kept = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries.OrderBy(e => e.Name, StringComparer.Ordinal))
+        {
+            if (kept.TryAdd(entry.Name, entry)) continue;
+            if (_caseClashes.TryAdd(Join(relative, entry.Name), 0))
+                Log.Warn($"\"{Join(relative, entry.Name)}\" differs only in upper/lower case from \"{Join(relative, kept[entry.Name].Name)}\" on the server; Windows can hold only one, so it is left out here. Rename one of them on the website.");
+        }
+        return kept.Count == entries.Count ? entries : kept.Values.ToList();
+    }
 
     /// <summary>
     /// What a folder on the way to a granted one holds ("Team" for a grant on
@@ -181,9 +215,9 @@ public sealed partial class CloudProvider : IDisposable
     /// </summary>
     private List<RemoteEntry>? GrantPathChildren(string relative)
     {
-        var grants = _nestedGrants;
+        var grants = _grants;
         if (grants is not { Count: > 0 }) return null;
-        // Inside a granted folder, the server lists it.
+        // Inside a granted folder, top-level ones included, the server lists it.
         if (grants.Any(g => relative.Equals(g.Path, StringComparison.OrdinalIgnoreCase) || relative.StartsWith(g.Path + "/", StringComparison.OrdinalIgnoreCase))) return null;
         var prefix = relative + "/";
         var below = grants.Where(g => g.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
@@ -308,15 +342,8 @@ public sealed partial class CloudProvider : IDisposable
                 return;
             }
 
-            // Windows names ignore case, so "Ian" and "ian" on the server cannot both be here: the first is kept.
-            // Before, two such names stopped the whole folder from ever being refreshed.
-            var remoteByName = new Dictionary<string, RemoteEntry>(StringComparer.OrdinalIgnoreCase);
-            foreach (var entry in remote)
-            {
-                if (remoteByName.TryAdd(entry.Name, entry)) continue;
-                if (_caseClashes.TryAdd(Join(relative, entry.Name), 0))
-                    Log.Warn($"\"{Join(relative, entry.Name)}\" differs only in upper/lower case from \"{Join(relative, remoteByName[entry.Name].Name)}\" on the server; Windows can hold only one, so it is left out here. Rename one of them on the website.");
-            }
+            // ListAsync already left out names that differ only by case.
+            var remoteByName = remote.ToDictionary(e => e.Name, StringComparer.OrdinalIgnoreCase);
             var localEntries = new DirectoryInfo(local).GetFileSystemInfos();
             var toCreate = new List<RemoteEntry>();
             var pinnedAgain = new List<string>();
@@ -777,7 +804,18 @@ public sealed partial class CloudProvider : IDisposable
         }
         finally
         {
-            if (readOnly) File.SetAttributes(fullPath, File.GetAttributes(fullPath) | FileAttributes.ReadOnly);
+            if (readOnly)
+            {
+                try
+                {
+                    File.SetAttributes(fullPath, File.GetAttributes(fullPath) | FileAttributes.ReadOnly);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Gone or locked meanwhile: the error that matters is the one being thrown, if any.
+                    Log.Warn($"Could not make \"{relative}\" read-only again: {ex.Message}");
+                }
+            }
         }
     }
 
