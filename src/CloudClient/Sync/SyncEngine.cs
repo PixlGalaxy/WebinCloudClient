@@ -80,7 +80,8 @@ public sealed class SyncEngine : IDisposable
     public async Task SyncNowAsync()
     {
         if (_provider is not { } provider) return;
-        Log.Info("Sync now: comparing every folder with the server");
+        Log.Info("Sync now: comparing every folder with the server and retrying local changes");
+        provider.RetryLocalNow();
         await provider.ReconcileAllAsync();
     }
 

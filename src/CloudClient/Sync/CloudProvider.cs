@@ -143,10 +143,75 @@ public sealed partial class CloudProvider : IDisposable
     /// The folder's entries on the server, less the partial files it writes
     /// while an upload is in progress ("name.&lt;12 hex digits&gt;.part"), which
     /// would otherwise show here for a moment and vanish.
+    ///
+    /// A user who is not an admin sees, at the root, the folders granted to
+    /// them, each named after its whole path: a grant on "Team/Ian" arrives
+    /// named "Team/Ian", which Windows refuses as a name, and the whole batch
+    /// failed with it (such users saw nothing). Here "Team" becomes a folder
+    /// that only leads to what is granted below it, so local paths still match
+    /// the server's.
     /// </summary>
-    private async Task<List<RemoteEntry>> ListAsync(string relative) =>
-        (await _api.GetJsonAsync<RemoteListing>($"files?path={Uri.EscapeDataString(relative)}")).Entries
+    private async Task<List<RemoteEntry>> ListAsync(string relative)
+    {
+        if (relative != "")
+        {
+            if (_nestedGrants is null) await ListAsync("");
+            if (GrantPathChildren(relative) is { } children) return children;
+        }
+
+        var entries = (await _api.GetJsonAsync<RemoteListing>($"files?path={Uri.EscapeDataString(relative)}")).Entries
             .Where(entry => !UploadPartial().IsMatch(entry.Name)).ToList();
+        if (relative != "") return entries;
+
+        var nested = entries.Where(e => e.Name.Contains('/')).ToList();
+        _nestedGrants = nested;
+        var root = entries.Where(e => !e.Name.Contains('/')).ToList();
+        foreach (var top in nested.Select(e => e.Path.Split('/')[0]).Distinct(StringComparer.OrdinalIgnoreCase))
+            if (!root.Any(e => e.Name.Equals(top, StringComparison.OrdinalIgnoreCase))) root.Add(PathFolder(top, nested));
+        return root;
+    }
+
+    /// <summary>Grants below the top level, as the root listing gave them; null until the root is first listed.</summary>
+    private volatile List<RemoteEntry>? _nestedGrants;
+
+    /// <summary>
+    /// What a folder on the way to a granted one holds ("Team" for a grant on
+    /// "Team/Ian"): the server refuses to list it, so it is built from the
+    /// grants. Null for any other folder, which is listed by the server.
+    /// </summary>
+    private List<RemoteEntry>? GrantPathChildren(string relative)
+    {
+        var grants = _nestedGrants;
+        if (grants is not { Count: > 0 }) return null;
+        // Inside a granted folder, the server lists it.
+        if (grants.Any(g => relative.Equals(g.Path, StringComparison.OrdinalIgnoreCase) || relative.StartsWith(g.Path + "/", StringComparison.OrdinalIgnoreCase))) return null;
+        var prefix = relative + "/";
+        var below = grants.Where(g => g.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+        if (below.Count == 0) return null;
+
+        var children = new List<RemoteEntry>();
+        foreach (var name in below.Select(g => g.Path[prefix.Length..].Split('/')[0]).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var path = prefix + name;
+            var granted = below.FirstOrDefault(g => g.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+            children.Add(granted is not null
+                ? new RemoteEntry { Name = name, Path = granted.Path, Type = granted.Type, Size = granted.Size, ModifiedAt = granted.ModifiedAt }
+                : PathFolder(path, grants));
+        }
+        return children;
+    }
+
+    /// <summary>A folder that only leads to granted ones, dated like the newest of them.</summary>
+    private static RemoteEntry PathFolder(string path, List<RemoteEntry> grants) => new()
+    {
+        Name = path[(path.LastIndexOf('/') + 1)..],
+        Path = path,
+        Type = "folder",
+        ModifiedAt = grants.Where(g => g.Path.StartsWith(path + "/", StringComparison.OrdinalIgnoreCase)).Select(g => g.ModifiedAt).DefaultIfEmpty(DateTime.UtcNow).Max(),
+    };
+
+    /// <summary>Sync now: local changes waiting for another try go again at once.</summary>
+    public void RetryLocalNow() => _local?.RetryNow();
 
     [System.Text.RegularExpressions.GeneratedRegex(@"\.[0-9a-f]{12}\.part$")]
     private static partial System.Text.RegularExpressions.Regex UploadPartial();

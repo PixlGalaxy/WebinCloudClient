@@ -50,6 +50,12 @@ public sealed class LocalChanges : IDisposable
     /// <summary>Queues a path to be looked at once it has been quiet.</summary>
     public void Touch(string path) => _due[path] = DateTime.UtcNow + Quiet;
 
+    /// <summary>Sync now: every change waiting, failed ones included, is tried at the next pass.</summary>
+    public void RetryNow()
+    {
+        foreach (var path in _due.Keys) _due[path] = DateTime.UtcNow;
+    }
+
     /// <summary>Changes made here and not on the server yet, including the ones waiting for another try.</summary>
     public int Pending => _due.Count;
 
