@@ -58,6 +58,11 @@ public sealed class Updater
     public Version? Latest { get; private set; }
     /// <summary>Whether Webin Cloud Server answered the last check; null before the first one.</summary>
     public bool? Reachable { get; private set; }
+    /// <summary>The version being downloaded right now; null while checking or idle.</summary>
+    public Version? Downloading { get; private set; }
+    /// <summary>Bytes of <see cref="Downloading"/> received so far, and its size when the server says (else 0).</summary>
+    public long DownloadedBytes { get; private set; }
+    public long DownloadTotal { get; private set; }
     /// <summary>What the updater is doing or what went wrong, in words; null when idle.</summary>
     public string? Status { get; private set; }
     public bool IsBusy => Volatile.Read(ref _busy) == 1;
@@ -96,7 +101,13 @@ public sealed class Updater
                 return;
             }
 
+            // "Checking" shows for its second before "Downloading" takes over, so both are seen.
+            var checking = DateTime.UtcNow - started;
+            if (checking < ShortestCheck) await Task.Delay(ShortestCheck - checking);
             Log.Info($"Version {found.Version} is available; downloading it");
+            Downloading = found.Version;
+            DownloadedBytes = 0;
+            DownloadTotal = 0;
             await DownloadAsync(found);
             Ready = found;
             _lastProblem = null;
@@ -116,6 +127,7 @@ public sealed class Updater
         }
         finally
         {
+            Downloading = null;
             var left = ShortestCheck - (DateTime.UtcNow - started);
             if (left > TimeSpan.Zero) await Task.Delay(left);
             Interlocked.Exchange(ref _busy, 0);
@@ -200,6 +212,7 @@ public sealed class Updater
             using var response = await GetAsync(UpdateSource.ExeUrl, stream: true)
                 ?? throw new InvalidDataException("The update is no longer published.");
             var length = response.Content.Headers.ContentLength;
+            DownloadTotal = length ?? 0;
             await using var body = await response.Content.ReadAsStreamAsync();
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             long total = 0;
@@ -214,6 +227,7 @@ public sealed class Updater
                     if (total > MaxSize) throw new InvalidDataException("The downloaded update is far too large; it was discarded.");
                     hash.AppendData(buffer, 0, read);
                     await file.WriteAsync(buffer.AsMemory(0, read));
+                    DownloadedBytes = total;
                     var percent = length is > 0 ? (int)(total * 100 / length.Value) : -1;
                     if (percent != lastPercent)
                     {

@@ -409,8 +409,9 @@ public sealed class MainWindow : AppWindow
             apply.Margin = new Thickness(10, 0, 0, 0);
             var rows = Ui.Stack(
                 SettingRow("Installed", Ui.Text($"{Brand.Name} {Updater.Current}", "Body")),
-                SettingRow("Latest", Ui.Text(LatestText(), "Body")),
-                SettingRow("Connection", ServerStatus()));
+                SettingRow("Latest", Ui.Text(LatestText(), "Body")));
+            if (_updater.Downloading is not null) rows.Children.Add(SettingRow("Download", DownloadProgress()));
+            rows.Children.Add(SettingRow("Connection", ServerStatus()));
             // Something the rows do not say: a release that is not signed, say.
             if (_updater.Status is { } problem && _updater.Reachable == true && !_updater.IsBusy)
                 rows.Children.Add(Gap(Ui.Sentence(problem, "Warning"), 14));
@@ -422,17 +423,37 @@ public sealed class MainWindow : AppWindow
     private string LatestText()
     {
         if (_updater.Ready is { } ready) return $"{ready.Version}  (downloaded, installs on next start)";
+        if (_updater.Downloading is { } downloading) return $"{downloading}  (downloading)";
         // The result shows once the whole check is over, not halfway through it.
         if (_updater.IsBusy) return "Checking…";
         if (_updater.Latest is not { } latest) return "Not checked yet";
         return latest > Updater.Current ? $"{latest}  (update available)" : $"{latest}  (up to date)";
     }
 
+    /// <summary>A bar in the accent colour with "12.3 MB of 78.1 MB · 15%" under it, while an update downloads.</summary>
+    private UIElement DownloadProgress()
+    {
+        var got = _updater.DownloadedBytes;
+        var total = _updater.DownloadTotal;
+        var fraction = total > 0 ? Math.Clamp((double)got / total, 0, 1) : 0;
+        var track = new Grid { Height = 8, Width = 320, HorizontalAlignment = HorizontalAlignment.Left };
+        track.SetResourceReference(Panel.BackgroundProperty, "HoverBg");
+        track.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(fraction, GridUnitType.Star) });
+        track.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1 - fraction, GridUnitType.Star) });
+        var fill = new Border();
+        fill.SetResourceReference(Border.BackgroundProperty, "Accent");
+        track.Children.Add(fill);
+        var caption = total > 0 ? $"{Size(got)} of {Size(total)}  ·  {fraction * 100:0}%" : Size(got);
+        var stack = Ui.Stack(track, Gap(Ui.Text(caption, "CardHint"), 6));
+        stack.VerticalAlignment = VerticalAlignment.Center;
+        return stack;
+    }
+
     /// <summary>Webin Cloud Server's logo and whether it answered the last update check.</summary>
     private UIElement ServerStatus()
     {
         var checkedAt = _updater.LastChecked is { } at ? $"  ·  checked {at:HH:mm}" : "";
-        var (text, brush) = _updater.IsBusy ? ("Checking…", "Warning")
+        var (text, brush) = _updater.IsBusy && _updater.Downloading is null ? ("Checking…", "Warning")
             : _updater.Reachable switch
             {
                 true => ($"Online (Webin Cloud Server){checkedAt}", "Success"),
