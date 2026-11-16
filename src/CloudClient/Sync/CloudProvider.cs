@@ -55,8 +55,17 @@ public sealed partial class CloudProvider : IDisposable
     private readonly ConcurrentDictionary<CF_TRANSFER_KEY, CancellationTokenSource> _transfers = new();
     /// <summary>Folders being removed locally: listing them again would only fetch what is about to go.</summary>
     private readonly ConcurrentDictionary<string, byte> _removing = new(StringComparer.OrdinalIgnoreCase);
-    /// <summary>One comparison at a time, so two notices for the same folder never race.</summary>
-    private readonly SemaphoreSlim _reconcileGate = new(1, 1);
+    /// <summary>One comparison at a time per folder, so two notices for the same folder never race; different folders go in parallel.</summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _folderGates = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Folders compared with the server at once while walking the tree. Each
+    /// comparison mostly waits on the network: one at a time, 19,000 folders
+    /// at 200 ms each took over an hour.
+    /// </summary>
+    private const int ParallelFolders = 8;
+    private readonly object _walkGate = new();
+    private Task? _fullWalk;
+    private int _foldersCompared;
     /// <summary>Server names that clash with another by case only, already logged once.</summary>
     private readonly ConcurrentDictionary<string, byte> _caseClashes = new(StringComparer.Ordinal);
     // Kept as fields so the GC never collects delegates Windows still calls.
@@ -287,33 +296,74 @@ public sealed partial class CloudProvider : IDisposable
     }
 
     /// <summary>
-    /// After (re)connecting: every folder, top down, to catch up on what
-    /// changed while the app was away and to list folders not listed yet.
+    /// After (re)connecting, and Sync now: every folder, top down, to catch up
+    /// on what changed while the app was away and to list folders not listed
+    /// yet. One walk at a time: a second request shares the one running.
     /// </summary>
-    public Task ReconcileAllAsync() => WalkAsync("", everything: true);
-
-    private async Task WalkAsync(string start, bool everything)
+    public Task ReconcileAllAsync()
     {
-        var queue = new Queue<string>([start]);
-        while (queue.Count > 0)
+        lock (_walkGate)
         {
-            var relative = queue.Dequeue();
-            await ReconcileFolderAsync(relative);
-            var local = LocalPath(relative);
-            if (!Directory.Exists(local)) continue;
-            try
+            if (_fullWalk is { IsCompleted: false }) return _fullWalk;
+            Volatile.Write(ref _foldersCompared, 0);
+            return _fullWalk = WalkAsync("", everything: true, done => Volatile.Write(ref _foldersCompared, done));
+        }
+    }
+
+    /// <summary>Whether every folder is being compared with the server (after connecting, or Sync now).</summary>
+    public bool IsComparingAll => _fullWalk is { IsCompleted: false };
+
+    /// <summary>Folders compared so far in the current (or last) full walk.</summary>
+    public int FoldersCompared => Volatile.Read(ref _foldersCompared);
+
+    /// <summary>Top down, several folders at a time; a folder's subfolders are queued once it is compared.</summary>
+    private async Task WalkAsync(string start, bool everything, Action<int>? progress = null)
+    {
+        var queue = new ConcurrentQueue<string>([start]);
+        var ready = new SemaphoreSlim(1);
+        var pending = 1;
+        var done = 0;
+
+        async Task Worker()
+        {
+            while (true)
             {
-                foreach (var child in new DirectoryInfo(local).GetDirectories())
+                await ready.WaitAsync();
+                if (!queue.TryDequeue(out var relative))
                 {
-                    if (IsIgnored(child.Name) || !IsSynced(child.FullName)) continue;
-                    if (everything || !IsListed(child.FullName)) queue.Enqueue(Join(relative, child.Name));
+                    // Nothing left anywhere: pass the wake-up on so the other workers stop too.
+                    ready.Release();
+                    return;
+                }
+                try
+                {
+                    await ReconcileFolderAsync(relative);
+                    var local = LocalPath(relative);
+                    if (Directory.Exists(local))
+                    {
+                        foreach (var child in new DirectoryInfo(local).GetDirectories())
+                        {
+                            if (IsIgnored(child.Name) || !IsSynced(child.FullName)) continue;
+                            if (!everything && IsListed(child.FullName)) continue;
+                            Interlocked.Increment(ref pending);
+                            queue.Enqueue(Join(relative, child.Name));
+                            ready.Release();
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    // Removed or renamed meanwhile; the next notice for its parent sorts it out.
+                }
+                finally
+                {
+                    progress?.Invoke(Interlocked.Increment(ref done));
+                    if (Interlocked.Decrement(ref pending) == 0) ready.Release();
                 }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                // Removed or renamed meanwhile; the next notice for its parent sorts it out.
-            }
         }
+
+        await Task.WhenAll(Enumerable.Range(0, ParallelFolders).Select(_ => Task.Run(Worker)));
     }
 
     /// <summary>
@@ -328,7 +378,8 @@ public sealed partial class CloudProvider : IDisposable
         // A folder listed for the first time only fills in; that is not news for the activity list.
         var wasListed = IsListed(local);
 
-        await _reconcileGate.WaitAsync();
+        var gate = _folderGates.GetOrAdd(relative, _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
         try
         {
             List<RemoteEntry> remote;
@@ -415,7 +466,7 @@ public sealed partial class CloudProvider : IDisposable
         }
         finally
         {
-            _reconcileGate.Release();
+            gate.Release();
         }
     }
 

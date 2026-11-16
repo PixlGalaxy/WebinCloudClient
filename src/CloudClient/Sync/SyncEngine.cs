@@ -44,6 +44,12 @@ public sealed class SyncEngine : IDisposable
     /// <summary>Changes made here and not on the server yet.</summary>
     public int PendingChanges => _provider?.PendingChanges ?? 0;
 
+    /// <summary>Whether every folder is being compared with the server (after connecting, or Sync now).</summary>
+    public bool IsComparingAll => _provider?.IsComparingAll ?? false;
+
+    /// <summary>Folders compared so far in the current full comparison.</summary>
+    public int FoldersCompared => _provider?.FoldersCompared ?? 0;
+
     /// <summary>Changes that failed and wait for another try.</summary>
     public int FailingChanges => _provider?.FailingChanges ?? 0;
 

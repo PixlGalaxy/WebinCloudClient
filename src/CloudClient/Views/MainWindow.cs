@@ -305,6 +305,8 @@ public sealed class MainWindow : AppWindow
             _sync.Problem is not null ? ("Not available", "Warning", "WarningChip", _sync.Problem)
             : !_sync.IsRunning ? ("Starting…", "Accent", "AccentChip", "The folder is being set up in File Explorer.")
             : _sync.Online == false ? ("Unsynced", "Warning", "WarningChip", "Can't reach the server. Changes sync once it is back.")
+            : _sync.IsComparingAll
+                ? ($"Syncing · {_sync.FoldersCompared:N0} folders", "Accent", "AccentChip", "Every folder is being compared with the server; a large tree takes a few minutes.")
             : _syncingNow || transfers || _sync.PendingChanges > _sync.FailingChanges
                 ? ("Syncing", "Accent", "AccentChip", "Files are going up or coming down.")
             : _sync.FailingChanges > 0
