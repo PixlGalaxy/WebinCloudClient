@@ -92,6 +92,10 @@ public sealed class App : Application
     private void Begin()
     {
         Log.Info($"{Brand.Name} {Updater.Current} starting from {Environment.ProcessPath}");
+        Log.Debug($"Windows {Environment.OSVersion.Version}, {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}, " +
+            $"{System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, {(_background ? "started in the background" : "window open")}");
+        Log.Debug($"Settings: server {_settings.ServerUrl ?? "(none)"}, user {_settings.Username ?? "(none)"}, device \"{_settings.DeviceName}\", " +
+            $"folder {_settings.SyncFolder}, start with Windows {(_settings.StartWithWindows ? "on" : "off")}, data in {AppPaths.DataDir}");
         _tray = new TrayIcon(ShowWindow, TrayItems);
         ThumbnailServer.Start();
         _updater.ReadyToInstall += version => Dispatcher.BeginInvoke(() => _tray?.SetUpdate(version));

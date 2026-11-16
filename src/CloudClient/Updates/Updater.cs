@@ -89,6 +89,7 @@ public sealed class Updater
             var found = await FindAsync();
             LastChecked = DateTime.Now;
             Reachable = true;
+            Log.Debug($"Update check: published {Latest?.ToString() ?? "nothing"}, installed {Current}{(found is null ? ", nothing to download" : "")}");
             // A development build only shows what is published; it never downloads it.
             if (found is null || !Supported)
             {

@@ -34,8 +34,11 @@ public sealed class ServerEvents : IDisposable
     /// <summary>Starts listening; call once every handler is attached.</summary>
     public void Start() => _ = Task.Run(RunAsync);
 
+    private static string Since(DateTime? at) => at is null ? "a moment" : $"{(DateTime.UtcNow - at.Value).TotalMinutes:0.0} min";
+
     private async Task RunAsync()
     {
+        DateTime? connectedAt = null;
         while (!_stop.IsCancellationRequested)
         {
             try
@@ -46,6 +49,8 @@ public sealed class ServerEvents : IDisposable
                     stream: true);
                 await using var body = await response.Content.ReadAsStreamAsync(_stop.Token);
                 using var reader = new StreamReader(body);
+                connectedAt = DateTime.UtcNow;
+                Log.Info("Live connection to the server open");
                 ConnectionChanged?.Invoke(true);
 
                 string? eventName = null;
@@ -55,7 +60,11 @@ public sealed class ServerEvents : IDisposable
                     using var silence = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                     silence.CancelAfter(Silence);
                     var line = await reader.ReadLineAsync(silence.Token);
-                    if (line is null) break;
+                    if (line is null)
+                    {
+                        Log.Info($"Live connection closed by the server after {Since(connectedAt)}");
+                        break;
+                    }
                     if (line.StartsWith("event:", StringComparison.Ordinal)) eventName = line[6..].Trim();
                     else if (line.StartsWith("data:", StringComparison.Ordinal)) data = line[5..].Trim();
                     else if (line.Length == 0)
@@ -82,10 +91,12 @@ public sealed class ServerEvents : IDisposable
             }
             catch (Exception ex)
             {
-                Log.Warn($"Server events interrupted: {ex.GetType().Name}: {ex.Message}");
+                Log.Warn($"Server events interrupted{(connectedAt is null ? "" : $" after {Since(connectedAt)}")}: {ex.GetType().Name}: {ex.Message}");
             }
 
+            connectedAt = null;
             ConnectionChanged?.Invoke(false);
+            Log.Debug($"Connecting again in {RetryEvery.TotalSeconds:0} s");
             try
             {
                 await Task.Delay(RetryEvery, _stop.Token);

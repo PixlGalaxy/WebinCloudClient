@@ -114,11 +114,29 @@ public sealed class ApiClient : IDisposable
         return _tokens.AccessToken;
     }
 
-    private Task<HttpResponseMessage> SendOnceAsync(HttpClient http, Func<HttpRequestMessage> build, CancellationToken cancel)
+    /// <summary>A request whose answer takes longer than this is logged, as is any that fails.</summary>
+    private static readonly TimeSpan SlowRequest = TimeSpan.FromSeconds(5);
+
+    private async Task<HttpResponseMessage> SendOnceAsync(HttpClient http, Func<HttpRequestMessage> build, CancellationToken cancel)
     {
         var request = build();
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _tokens.AccessToken);
-        return http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancel);
+        // Paths and statuses only: the token travels in a header, never in the address.
+        var what = $"{request.Method} {request.RequestUri?.PathAndQuery}";
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        try
+        {
+            var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancel);
+            var took = System.Diagnostics.Stopwatch.GetElapsedTime(started);
+            if (!response.IsSuccessStatusCode || took > SlowRequest)
+                Log.Debug($"HTTP {what} -> {(int)response.StatusCode} {response.ReasonPhrase} in {took.TotalMilliseconds:N0} ms");
+            return response;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !cancel.IsCancellationRequested)
+        {
+            Log.Debug($"HTTP {what} failed after {System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds:N0} ms: {ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
     }
 
     /// <summary>One renewal at a time; a caller whose token was already replaced just uses the new one.</summary>
@@ -140,6 +158,7 @@ public sealed class ApiClient : IDisposable
             var issued = (await response.Content.ReadFromJsonAsync<TokenResponse>(cancel))!;
             _tokens = ToTokenSet(issued);
             TokenStore.Save(ServerUrl, _tokens);
+            Log.Debug($"Sign-in renewed; valid until {_tokens.AccessExpiresAt.ToLocalTime():HH:mm:ss}");
         }
         finally
         {

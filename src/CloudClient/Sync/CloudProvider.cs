@@ -304,9 +304,17 @@ public sealed partial class CloudProvider : IDisposable
     {
         lock (_walkGate)
         {
-            if (_fullWalk is { IsCompleted: false }) return _fullWalk;
+            if (_fullWalk is { IsCompleted: false })
+            {
+                Log.Debug("Comparing every folder: already running, joined");
+                return _fullWalk;
+            }
             Volatile.Write(ref _foldersCompared, 0);
-            return _fullWalk = WalkAsync("", everything: true, done => Volatile.Write(ref _foldersCompared, done));
+            Log.Info("Comparing every folder with the server");
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
+            return _fullWalk = WalkAsync("", everything: true, done => Volatile.Write(ref _foldersCompared, done))
+                .ContinueWith(walk => Log.Info($"Compared {FoldersCompared:N0} folders with the server in " +
+                    $"{System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds:N1} s{(walk.IsFaulted ? $" (stopped: {walk.Exception?.GetBaseException().Message})" : "")}"));
         }
     }
 
@@ -405,7 +413,9 @@ public sealed partial class CloudProvider : IDisposable
                 // Queued too, for changes made while the app was closed, which no watcher saw.
                 if (IsIgnored(item.Name) || !IsSynced(item.FullName))
                 {
-                    if (!IsIgnored(item.Name)) _local?.Touch(item.FullName);
+                    // Queued only if it is not already: touching restarted its quiet time, and with a server notice
+                    // after every upload, the rest of a large folder kept being pushed back.
+                    if (!IsIgnored(item.Name)) _local?.Queue(item.FullName);
                     remoteByName.Remove(item.Name);
                     continue;
                 }
@@ -440,7 +450,10 @@ public sealed partial class CloudProvider : IDisposable
             if (wasListed)
             {
                 foreach (var entry in remoteByName.Values)
+                {
+                    Log.Info($"New on the server: {entry.Path}{(entry.Type == "folder" ? " (folder)" : $" ({entry.Size:N0} bytes)")}");
                     Activity.Record(ActivityKind.NewFromServer, entry.Path, entry.Type == "folder" ? null : entry.Size);
+                }
             }
 
             if (toCreate.Count > 0) CreatePlaceholders(local, toCreate);
@@ -770,6 +783,7 @@ public sealed partial class CloudProvider : IDisposable
             ApplyPinState(fullPath, isDirectory);
             return true;
         }
+        Log.Debug($"Local change: \"{relative}\" ({(isDirectory ? "folder" : State(fullPath).HasFlag(CF_PLACEHOLDER_STATE.CF_PLACEHOLDER_STATE_PLACEHOLDER) ? "edited file" : "new file")})");
 
         try
         {
@@ -832,8 +846,9 @@ public sealed partial class CloudProvider : IDisposable
         var transfer = Activity.Begin(relative, Direction.Up, new FileInfo(fullPath).Length);
         try
         {
+            var started = System.Diagnostics.Stopwatch.GetTimestamp();
             var how = await _uploader.UploadAsync(fullPath, ParentOf(relative), NameOf(relative), transfer.Total, bytes => Activity.Progress(transfer, bytes));
-            return (transfer.Total, how);
+            return (transfer.Total, $"{how}{Timing(transfer.Total, System.Diagnostics.Stopwatch.GetElapsedTime(started))}");
         }
         finally
         {
@@ -959,8 +974,13 @@ public sealed partial class CloudProvider : IDisposable
 
     private void OnCancelFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
+        Log.Debug($"Windows cancelled a download at byte {parameters.Cancel.FetchData.FileOffset:N0} (the program that opened the file let go of it)");
         if (_transfers.TryRemove(info.TransferKey, out var cancel)) cancel.Cancel();
     }
+
+    /// <summary>" in 2.3 s, 34.1 MB/s" for the log.</summary>
+    private static string Timing(long bytes, TimeSpan took) =>
+        $" in {took.TotalSeconds:N1} s, {bytes / 1048576.0 / Math.Max(0.001, took.TotalSeconds):N1} MB/s";
 
     private async Task DownloadAsync(
         CF_CONNECTION_KEY connection, CF_TRANSFER_KEY transfer, string relative, long offset, long length, long fileSize, CancellationToken cancel)
@@ -968,6 +988,7 @@ public sealed partial class CloudProvider : IDisposable
         var position = offset;
         var end = Math.Min(offset + length, fileSize);
         var progress = Activity.Begin(relative, Direction.Down, end - offset);
+        var downloadStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         try
         {
             using var response = await _api.SendAsync(() =>
@@ -995,6 +1016,7 @@ public sealed partial class CloudProvider : IDisposable
             }
             // Windows may fetch a file in pieces; the piece that reaches the end completes it.
             if (end == fileSize) Activity.Record(ActivityKind.Downloaded, relative, fileSize);
+            Log.Debug($"Downloaded \"{relative}\" bytes {offset:N0}-{end:N0} of {fileSize:N0}{Timing(end - offset, System.Diagnostics.Stopwatch.GetElapsedTime(downloadStarted))}");
         }
         catch (Exception ex)
         {
