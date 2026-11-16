@@ -59,10 +59,14 @@ public sealed class SetupWindow : AppWindow
 
         async void Submit()
         {
-            var normalized = ServerAddress.Normalize(address.Text);
+            // The scheme is asked for, not guessed: "cloud.example.com" was taken as https, and a server on http
+            // then failed with an error that did not say why.
+            var typed = address.Text.Trim();
+            var hasScheme = typed.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || typed.StartsWith("https://", StringComparison.OrdinalIgnoreCase);
+            var normalized = hasScheme ? ServerAddress.Normalize(typed) : null;
             if (normalized is null)
             {
-                Show(status, "Enter the address you open in your browser, like cloud.example.com.", "Danger");
+                Show(status, "Enter the full address, starting with http:// or https://, like https://cloud.example.com.", "Danger");
                 return;
             }
             await RunAsync(new Control[] { address, continueButton }, status, "Looking for the server…", async cancel =>
@@ -85,7 +89,7 @@ public sealed class SetupWindow : AppWindow
 
         _step.Content = Ui.Stack(
             Ui.Text("Connect to your server", "PageTitle"),
-            Gap(Ui.Text($"Enter the address you use to open {Brand.Name} in your browser.", "PageSubtitle"), 6),
+            Gap(Ui.Text($"Enter the address you use to open {Brand.Name} in your browser, with http:// or https://.", "PageSubtitle"), 6),
             Gap(Ui.Field("Server address", address), 26),
             Gap(status, 12),
             Gap(continueButton, 22));
@@ -231,7 +235,12 @@ public sealed class SetupWindow : AppWindow
         }
         catch (Exception ex)
         {
-            Log.Error("Setup step failed", ex);
+            // A wrong address, no connection or a refused password is shown on the page: it is not a problem with
+            // the app, and it stayed in Problems long after signing in. Only something unexpected goes there.
+            if (ex is ApiException or HttpRequestException or OperationCanceledException or SignedOutException)
+                Log.Info($"Setup step failed: {ex.GetType().Name}: {ex.Message}");
+            else
+                Log.Error("Setup step failed", ex);
             Show(status, Explain(ex, busy.IsCancellationRequested), "Danger");
         }
         finally
